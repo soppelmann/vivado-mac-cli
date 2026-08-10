@@ -315,13 +315,8 @@ func cmdInstall(_ args: [String]) throws {
         die("xsetup Install failed — rerun `vivado-mac install` to resume/retry")
     }
 
-    note("post-install: OS libraries (installLibs.sh, CRLF fix) …")
-    _ = sshExec(ip, "f=$(find /work/.installer /opt/Xilinx -name installLibs.sh 2>/dev/null | head -1); " +
-        "if [ -n \"$f\" ]; then sudo sed -i 's/\\r$//' \"$f\"; sudo bash \"$f\" || true; fi")
-
-    note("post-install: Rosetta udev workaround + wrappers …")
-    _ = sshExec(ip, "echo \(b64(Assets.udevStubC)) | base64 -d > /tmp/udev_stub.c && " +
-        "x86_64-linux-gnu-gcc -shared -fPIC -O2 /tmp/udev_stub.c -o /opt/Xilinx/udev_stub.so")
+    note("post-install: OS libs, Rosetta workarounds, wrappers …")
+    _ = sshExec(ip, "echo \(b64(Assets.postInstallScript)) | base64 -d | bash")
     _ = sshExec(ip, "echo \(b64(Assets.vivadoWrapper)) | base64 -d | sudo tee /usr/local/bin/vivado >/dev/null && " +
         "sudo chmod +x /usr/local/bin/vivado")
     _ = sshExec(ip, "echo \(b64(Assets.profileScript)) | base64 -d | sudo tee /etc/profile.d/vivado.sh >/dev/null")

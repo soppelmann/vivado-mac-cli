@@ -306,7 +306,12 @@ enum Assets {
             libsm6:amd64 libice6:amd64 \
             libx11-6:amd64 libxext6:amd64 libxrender1:amd64 libxtst6:amd64 \
             libxi6:amd64 libxrandr2:amd64 libxfixes3:amd64 libxft2:amd64 \
-            libxcursor1:amd64
+            libxcursor1:amd64 \
+            libpixman-1-0:amd64 libcairo2:amd64 libpango-1.0-0:amd64 \
+            libpangocairo-1.0-0:amd64 libpangoft2-1.0-0:amd64 \
+            libgdk-pixbuf-2.0-0:amd64 libatk1.0-0t64:amd64 libgtk-3-0t64:amd64 \
+            libxcomposite1:amd64 libxdamage1:amd64 libxinerama1:amd64 \
+            libxkbcommon0:amd64 libxcb-render0:amd64 libxcb-shm0:amd64
           # arch shim: xsetup/vivado launcher scripts run under ARM bash and
           # check `uname -m`; without this they abort ("not supported on 32
           # bit platforms"). Scoped via PATH, not a global uname replacement.
@@ -463,6 +468,28 @@ enum Assets {
     int udev_enumerate_scan_devices(void *e) { (void)e; return 0; }
     """
 
+    /// Runs in the guest after xsetup Install succeeds.
+    static let postInstallScript = """
+    #!/bin/bash
+    set -e
+    # AMD's installLibs.sh ships with CRLF line endings; run it non-fatally
+    f=$(find /opt/Xilinx -name installLibs.sh 2>/dev/null | head -1)
+    if [ -n "$f" ]; then sudo sed -i 's/\\r$//' "$f"; sudo bash "$f" || true; fi
+    # installLibs flips the cross toolchain to the broken :amd64 variants; re-pin
+    sudo apt-get remove -y gcc-13-x86-64-linux-gnu:amd64 binutils-x86-64-linux-gnu:amd64 2>/dev/null || true
+    sudo apt-get install -y -q gcc-x86-64-linux-gnu:arm64 binutils-x86-64-linux-gnu:arm64 libc6-dev-amd64-cross gcc >/dev/null
+    # per-arch no-op udev stubs, selected at runtime via LD_PRELOAD $PLATFORM
+    echo 'int udev_enumerate_scan_devices(void *e) { (void)e; return 0; }' > /tmp/udev_stub.c
+    x86_64-linux-gnu-gcc -shared -fPIC -O2 /tmp/udev_stub.c -o /opt/Xilinx/udev_stub_x86_64.so
+    gcc -shared -fPIC -O2 /tmp/udev_stub.c -o /opt/Xilinx/udev_stub_aarch64.so
+    # AMD bundles x86-64 ncurses5/tinfo5 for Ubuntu 24 but its launcher misses them
+    for lib in libncurses.so.5 libtinfo.so.5; do
+      src=$(ls /opt/Xilinx/*/Vitis/lib/lnx64.o/Ubuntu/24/$lib /opt/Xilinx/*/Vivado/lib/lnx64.o/Ubuntu/24/$lib 2>/dev/null | head -1)
+      [ -n "$src" ] && sudo ln -sf "$src" /usr/lib/x86_64-linux-gnu/$lib
+    done
+    echo POST_INSTALL_OK
+    """
+
     /// Guest-side /usr/local/bin/vivado wrapper.
     static let vivadoWrapper = """
     #!/bin/bash
@@ -473,7 +500,9 @@ enum Assets {
     done
     bin=$(ls -1 /opt/Xilinx/*/Vivado/bin/vivado /opt/Xilinx/Vivado/*/bin/vivado 2>/dev/null | head -1)
     if [ -z "$bin" ]; then echo "vivado not found under /opt/Xilinx" >&2; exit 127; fi
-    if [ -f /opt/Xilinx/udev_stub.so ]; then export LD_PRELOAD=/opt/Xilinx/udev_stub.so; fi
+    # $PLATFORM expands per-process in ld.so, so ARM launcher scripts load the
+    # aarch64 no-op stub and the x86-64 Vivado binaries load the real one.
+    if [ -f /opt/Xilinx/udev_stub_x86_64.so ]; then export LD_PRELOAD='/opt/Xilinx/udev_stub_$PLATFORM.so'; fi
     export XILINXD_LICENSE_FILE=${XILINXD_LICENSE_FILE:-/work/Xilinx.lic}
     exec "$bin" "$@"
     """
