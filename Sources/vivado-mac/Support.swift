@@ -314,6 +314,12 @@ enum Assets {
           printf '#!/bin/sh\n[ "$1" = "-m" ] && { echo x86_64; exit 0; }\nexec /usr/bin/uname "$@"\n' > /opt/vivado-shim/uname
           printf '#!/bin/sh\necho x86_64\n' > /opt/vivado-shim/arch
           chmod +x /opt/vivado-shim/uname /opt/vivado-shim/arch
+          # independent public DNS: the VZ NAT resolver (Mac's mDNSResponder,
+          # possibly behind Tailscale MagicDNS) drops lookups under sustained
+          # load, killing the multi-GB installer download mid-flight
+          mkdir -p /etc/systemd/resolved.conf.d
+          printf '[Resolve]\nDNS=1.1.1.1 8.8.8.8\nDomains=~.\n' > /etc/systemd/resolved.conf.d/public-dns.conf
+          systemctl restart systemd-resolved
     runcmd:
       - systemctl daemon-reload
       - systemctl enable --now rosetta-binfmt.service
@@ -480,9 +486,11 @@ enum Assets {
     static let profileScript = """
     # vivado-mac environment
     export PATH="/opt/vivado-shim:$PATH"
-    # JDK defaults to vfork for Runtime.exec, which breaks under Rosetta
-    # (xsetup dies probing '/bin/sh -c echo $TMPDIR'); plain fork works.
-    export JAVA_TOOL_OPTIONS="-Djdk.lang.Process.launchMechanism=FORK"
+    # FORK: the JDK defaults to vfork for Runtime.exec, which breaks under
+    # Rosetta (xsetup dies probing '/bin/sh -c echo $TMPDIR').
+    # preferIPv4Stack: the VZ NAT is IPv4-only, but AMD's Akamai CDN resolves
+    # to AAAA records — Java then fails with NoRouteToHostException.
+    export JAVA_TOOL_OPTIONS="-Djdk.lang.Process.launchMechanism=FORK -Djava.net.preferIPv4Stack=true"
     export XILINXD_LICENSE_FILE=${XILINXD_LICENSE_FILE:-/work/Xilinx.lic}
     vbin=$(ls -d /opt/Xilinx/*/Vivado/bin /opt/Xilinx/Vivado/*/bin 2>/dev/null | head -1)
     if [ -n "$vbin" ]; then case ":$PATH:" in *":$vbin:"*) ;; *) PATH="$PATH:$vbin" ;; esac; fi
