@@ -273,7 +273,7 @@ func cmdInstall(_ args: [String]) throws {
     let (_, tokenCheck) = sshCapture(ip, "test -f ~/.Xilinx/wi_authentication_key && echo yes")
     if !tokenCheck.contains("yes") {
         note("AMD account login (AuthTokenGen) — enter your AMD/Xilinx credentials:")
-        guard sshExec(ip, "/work/.installer/xsetup -b AuthTokenGen", tty: true) == 0 else {
+        guard sshExec(ip, "PATH=/opt/vivado-shim:$PATH /work/.installer/xsetup -b AuthTokenGen", tty: true) == 0 else {
             die("AuthTokenGen failed — rerun `vivado-mac install` to retry")
         }
     }
@@ -293,7 +293,7 @@ func cmdInstall(_ args: [String]) throws {
     let (_, cfgCheck) = sshCapture(ip, "test -f \(guestConfig) && echo yes")
     if !cfgCheck.contains("yes") {
         note("generating install config (choose edition/devices; ConfigGen is interactive) …")
-        guard sshExec(ip, "/work/.installer/xsetup -b ConfigGen", tty: true) == 0 else {
+        guard sshExec(ip, "PATH=/opt/vivado-shim:$PATH /work/.installer/xsetup -b ConfigGen", tty: true) == 0 else {
             die("ConfigGen failed")
         }
         _ = sshExec(ip, "cp ~/.Xilinx/install_config.txt \(guestConfig) && " +
@@ -310,7 +310,7 @@ func cmdInstall(_ args: [String]) throws {
 
     note("installing Vivado (downloads tens of GB; can take 1–3 h) …")
     _ = sshExec(ip, "sudo mkdir -p /opt/Xilinx && sudo chown vivado:vivado /opt/Xilinx")
-    guard sshExec(ip, "/work/.installer/xsetup --agree XilinxEULA,3rdPartyEULA --batch Install " +
+    guard sshExec(ip, "PATH=/opt/vivado-shim:$PATH /work/.installer/xsetup --agree XilinxEULA,3rdPartyEULA --batch Install " +
         "--config \(guestConfig)", tty: true) == 0 else {
         die("xsetup Install failed — rerun `vivado-mac install` to resume/retry")
     }

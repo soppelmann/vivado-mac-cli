@@ -288,6 +288,13 @@ enum Assets {
             libx11-6:amd64 libxext6:amd64 libxrender1:amd64 libxtst6:amd64 \
             libxi6:amd64 libxrandr2:amd64 libxfixes3:amd64 libxft2:amd64 \
             libxcursor1:amd64
+          # arch shim: xsetup/vivado launcher scripts run under ARM bash and
+          # check `uname -m`; without this they abort ("not supported on 32
+          # bit platforms"). Scoped via PATH, not a global uname replacement.
+          mkdir -p /opt/vivado-shim
+          printf '#!/bin/sh\n[ "$1" = "-m" ] && { echo x86_64; exit 0; }\nexec /usr/bin/uname "$@"\n' > /opt/vivado-shim/uname
+          printf '#!/bin/sh\necho x86_64\n' > /opt/vivado-shim/arch
+          chmod +x /opt/vivado-shim/uname /opt/vivado-shim/arch
     runcmd:
       - systemctl daemon-reload
       - systemctl enable --now rosetta-binfmt.service
@@ -435,6 +442,7 @@ enum Assets {
     static let vivadoWrapper = """
     #!/bin/bash
     # vivado-mac: run x86-64 Vivado under Rosetta with the udev-stub preload
+    export PATH="/opt/vivado-shim:$PATH"
     for s in /opt/Xilinx/*/Vivado/settings64.sh /opt/Xilinx/Vivado/*/settings64.sh; do
       if [ -f "$s" ]; then source "$s"; break; fi
     done
@@ -452,6 +460,7 @@ enum Assets {
     /// while still exposing xsdb/updatemem/etc.
     static let profileScript = """
     # vivado-mac environment
+    export PATH="/opt/vivado-shim:$PATH"
     export XILINXD_LICENSE_FILE=${XILINXD_LICENSE_FILE:-/work/Xilinx.lic}
     vbin=$(ls -d /opt/Xilinx/*/Vivado/bin /opt/Xilinx/Vivado/*/bin 2>/dev/null | head -1)
     if [ -n "$vbin" ]; then case ":$PATH:" in *":$vbin:"*) ;; *) PATH="$PATH:$vbin" ;; esac; fi
