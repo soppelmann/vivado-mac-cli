@@ -480,6 +480,9 @@ enum Assets {
     static let profileScript = """
     # vivado-mac environment
     export PATH="/opt/vivado-shim:$PATH"
+    # JDK defaults to vfork for Runtime.exec, which breaks under Rosetta
+    # (xsetup dies probing '/bin/sh -c echo $TMPDIR'); plain fork works.
+    export JAVA_TOOL_OPTIONS="-Djdk.lang.Process.launchMechanism=FORK"
     export XILINXD_LICENSE_FILE=${XILINXD_LICENSE_FILE:-/work/Xilinx.lic}
     vbin=$(ls -d /opt/Xilinx/*/Vivado/bin /opt/Xilinx/Vivado/*/bin 2>/dev/null | head -1)
     if [ -n "$vbin" ]; then case ":$PATH:" in *":$vbin:"*) ;; *) PATH="$PATH:$vbin" ;; esac; fi
