@@ -1,0 +1,389 @@
+import Foundation
+
+// MARK: - Paths / Config
+
+enum Paths {
+    static let stateDir = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".vivado-mac")
+    static let configFile = stateDir.appendingPathComponent("config.json")
+    static let baseImage = stateDir.appendingPathComponent("ubuntu-24.04-arm64.qcow2")
+    static let diskImage = stateDir.appendingPathComponent("disk.img")
+    static let efiVars = stateDir.appendingPathComponent("efi_vars.fd")
+    static let seedISO = stateDir.appendingPathComponent("seed.iso")
+    static let sshKey = stateDir.appendingPathComponent("id_ed25519")
+    static let sshPubKey = stateDir.appendingPathComponent("id_ed25519.pub")
+    static let knownHosts = stateDir.appendingPathComponent("known_hosts")
+    static let pidFile = stateDir.appendingPathComponent("vm.pid")
+    static let consoleLog = stateDir.appendingPathComponent("console.log")
+    static let vmhostLog = stateDir.appendingPathComponent("vmhost.log")
+}
+
+struct Config: Codable {
+    var cpus: Int
+    var memoryGiB: Int
+    var diskGiB: Int
+    var workDir: String
+    var macAddress: String
+    var machineID: String // base64 VZGenericMachineIdentifier
+
+    static func load() -> Config? {
+        guard let data = try? Data(contentsOf: Paths.configFile) else { return nil }
+        return try? JSONDecoder().decode(Config.self, from: data)
+    }
+
+    func save() throws {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try enc.encode(self).write(to: Paths.configFile)
+    }
+}
+
+func die(_ msg: String) -> Never {
+    FileHandle.standardError.write(("vivado-mac: " + msg + "\n").data(using: .utf8)!)
+    exit(1)
+}
+
+func note(_ msg: String) {
+    print("▸ " + msg)
+}
+
+// MARK: - Process helpers
+
+@discardableResult
+func run(_ tool: String, _ args: [String], quiet: Bool = false) -> Int32 {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: tool)
+    p.arguments = args
+    if quiet {
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+    }
+    do { try p.run() } catch { return -1 }
+    p.waitUntilExit()
+    return p.terminationStatus
+}
+
+func capture(_ tool: String, _ args: [String]) -> (status: Int32, output: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: tool)
+    p.arguments = args
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return (-1, "") }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return (p.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+}
+
+func shellQuote(_ s: String) -> String {
+    "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+var stdinIsTTY: Bool { isatty(0) == 1 }
+
+// MARK: - SSH
+
+private func sshBaseArgs(ip: String) -> [String] {
+    [
+        "-i", Paths.sshKey.path,
+        "-o", "UserKnownHostsFile=\(Paths.knownHosts.path)",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "LogLevel=ERROR",
+        "vivado@\(ip)",
+    ]
+}
+
+/// Run `cmd` in the guest through a login shell (so /etc/profile.d is sourced).
+@discardableResult
+func sshExec(_ ip: String, _ cmd: String, tty: Bool = false) -> Int32 {
+    var args = ["-o", "ConnectTimeout=10"]
+    if tty { args.append("-t") }
+    args += sshBaseArgs(ip: ip)
+    args += ["--", "bash", "-lc", shellQuote(cmd)]
+    return run("/usr/bin/ssh", args)
+}
+
+func sshCapture(_ ip: String, _ cmd: String) -> (status: Int32, output: String) {
+    var args = ["-o", "ConnectTimeout=10", "-o", "BatchMode=yes"]
+    args += sshBaseArgs(ip: ip)
+    args += ["--", "bash", "-lc", shellQuote(cmd)]
+    return capture("/usr/bin/ssh", args)
+}
+
+func sshReachable(_ ip: String) -> Bool {
+    var args = ["-o", "ConnectTimeout=3", "-o", "BatchMode=yes"]
+    args += sshBaseArgs(ip: ip)
+    args += ["--", "true"]
+    return run("/usr/bin/ssh", args, quiet: true) == 0
+}
+
+/// Interactive login shell.
+func sshInteractive(_ ip: String) -> Int32 {
+    run("/usr/bin/ssh", ["-t"] + sshBaseArgs(ip: ip))
+}
+
+// MARK: - Guest IP discovery (macOS DHCP leases for VZNATNetworkDeviceAttachment)
+
+/// dhcpd_leases stores MACs with leading zeros stripped per octet ("e:27:5:…").
+private func normalizeMAC(_ mac: String) -> String {
+    mac.lowercased().split(separator: ":").map { octet in
+        let t = octet.drop(while: { $0 == "0" })
+        return t.isEmpty ? "0" : String(t)
+    }.joined(separator: ":")
+}
+
+func leaseIPs(mac: String) -> [String] {
+    guard let text = try? String(contentsOfFile: "/var/db/dhcpd_leases", encoding: .utf8) else {
+        return []
+    }
+    let target = normalizeMAC(mac)
+    var ips: [String] = []
+    var currentIP: String?
+    var currentMAC: String?
+    for line in text.split(separator: "\n") {
+        let l = line.trimmingCharacters(in: .whitespaces)
+        if l == "{" || l == "}" {
+            if l == "}" {
+                if let ip = currentIP, let m = currentMAC, normalizeMAC(m) == target {
+                    ips.append(ip)
+                }
+                currentIP = nil
+                currentMAC = nil
+            }
+            continue
+        }
+        if l.hasPrefix("ip_address=") { currentIP = String(l.dropFirst("ip_address=".count)) }
+        if l.hasPrefix("hw_address=1,") { currentMAC = String(l.dropFirst("hw_address=1,".count)) }
+    }
+    // newest entries tend to be first in the file; keep order, dedupe
+    var seen = Set<String>()
+    return ips.filter { seen.insert($0).inserted }
+}
+
+func vmPID() -> pid_t? {
+    guard let s = try? String(contentsOf: Paths.pidFile, encoding: .utf8),
+          let pid = pid_t(s.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+    return kill(pid, 0) == 0 ? pid : nil
+}
+
+func waitForSSH(mac: String, timeoutSeconds: Int) -> String? {
+    let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+    while Date() < deadline {
+        for ip in leaseIPs(mac: mac) where sshReachable(ip) {
+            return ip
+        }
+        Thread.sleep(forTimeInterval: 2)
+    }
+    return nil
+}
+
+// MARK: - Embedded guest assets
+
+enum Assets {
+    /// cloud-init user-data. Placeholder: @@PUBKEY@@
+    static let userDataTemplate = #"""
+    #cloud-config
+    hostname: vivado-mac
+    locale: en_US.UTF-8
+    users:
+      - name: vivado
+        groups: [sudo]
+        sudo: "ALL=(ALL) NOPASSWD:ALL"
+        shell: /bin/bash
+        lock_passwd: true
+        ssh_authorized_keys:
+          - @@PUBKEY@@
+    package_update: true
+    packages:
+      - locales
+      - unzip
+      - file
+      - ca-certificates
+      - xvfb
+      - libx11-6
+      - libxext6
+      - libxrender1
+      - libxtst6
+      - libxi6
+      - libxrandr2
+      - libxfixes3
+      - libxft2
+      - libncurses6
+      - gcc-x86-64-linux-gnu
+    swap:
+      filename: /swap.img
+      size: 8589934592
+      maxsize: 8589934592
+    mounts:
+      - [rosetta, /media/rosetta, virtiofs, "ro,nofail", "0", "0"]
+      - [work, /work, virtiofs, "rw,nofail", "0", "0"]
+    write_files:
+      - path: /etc/rosetta-binfmt.conf
+        content: ':rosetta:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/media/rosetta/rosetta:POCF'
+      - path: /etc/systemd/system/rosetta-binfmt.service
+        content: |
+          [Unit]
+          Description=Register Rosetta 2 binfmt_misc handler for x86-64 ELF
+          Requires=media-rosetta.mount
+          After=media-rosetta.mount
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStartPre=/bin/sh -c 'mountpoint -q /proc/sys/fs/binfmt_misc || mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc'
+          ExecStart=/bin/sh -c '[ -e /proc/sys/fs/binfmt_misc/rosetta ] || cat /etc/rosetta-binfmt.conf > /proc/sys/fs/binfmt_misc/register'
+
+          [Install]
+          WantedBy=multi-user.target
+    runcmd:
+      - systemctl daemon-reload
+      - systemctl enable --now rosetta-binfmt.service
+      - ln -sfn /work /home/vivado/work
+      - chown -h vivado:vivado /home/vivado/work
+    """#
+
+    static let metaData = """
+    instance-id: vivado-mac-001
+    local-hostname: vivado-mac
+    """
+
+    /// qcow2 -> raw converter, Python stdlib only. Written to the state dir and
+    /// executed with the system python3 at setup time.
+    static let qcow2Converter = #"""
+    #!/usr/bin/env python3
+    """qcow2 -> raw converter (stdlib only).
+
+    Supports qcow2 v2/v3 with zlib-compressed clusters. No backing files, no
+    encryption, no extended L2 / zstd (Ubuntu cloud images need none of those).
+    Output is written sparse. Usage: qcow2_to_raw.py SRC DST [--expect-gpt]
+    """
+    import struct, sys, zlib
+
+    def die(msg):
+        sys.exit("qcow2_to_raw: " + msg)
+
+    def convert(src, dst):
+        f = open(src, "rb")
+        hdr = f.read(104)
+        if len(hdr) < 72:
+            die("truncated header")
+        magic, version = struct.unpack(">II", hdr[0:8])
+        if magic != 0x514649FB:
+            die("not a qcow2 file")
+        if version not in (2, 3):
+            die("unsupported qcow2 version %d" % version)
+        backing_offset, = struct.unpack(">Q", hdr[8:16])
+        cluster_bits, = struct.unpack(">I", hdr[20:24])
+        size, = struct.unpack(">Q", hdr[24:32])
+        crypt_method, = struct.unpack(">I", hdr[32:36])
+        l1_size, = struct.unpack(">I", hdr[36:40])
+        l1_offset, = struct.unpack(">Q", hdr[40:48])
+        if backing_offset:
+            die("backing files unsupported")
+        if crypt_method:
+            die("encrypted images unsupported")
+        if version == 3:
+            incompatible, = struct.unpack(">Q", hdr[72:80])
+            if incompatible != 0:
+                die("incompatible feature bits 0x%x unsupported" % incompatible)
+        if not (9 <= cluster_bits <= 21):
+            die("bad cluster_bits %d" % cluster_bits)
+        cluster_size = 1 << cluster_bits
+        l2_bits = cluster_bits - 3
+        l2_entries = 1 << l2_bits
+        f.seek(l1_offset)
+        l1 = struct.unpack(">%dQ" % l1_size, f.read(8 * l1_size)) if l1_size else ()
+        out = open(dst, "wb")
+        out.truncate(size)
+        total_clusters = (size + cluster_size - 1) >> cluster_bits
+        x = 62 - (cluster_bits - 8)
+        OFFSET_MASK = 0x00FFFFFFFFFFFE00
+        cached_l1i, l2 = -1, None
+        for ci in range(total_clusters):
+            l1i, l2i = ci >> l2_bits, ci & (l2_entries - 1)
+            if l1i >= len(l1):
+                break
+            if l1i != cached_l1i:
+                l2off = l1[l1i] & OFFSET_MASK
+                if l2off:
+                    f.seek(l2off)
+                    l2 = struct.unpack(">%dQ" % l2_entries, f.read(8 * l2_entries))
+                else:
+                    l2 = None
+                cached_l1i = l1i
+            if l2 is None:
+                continue
+            e = l2[l2i]
+            if e & (1 << 62):  # compressed cluster
+                coffset = e & ((1 << x) - 1)
+                nsectors = ((e >> x) & ((1 << (62 - x)) - 1)) + 1
+                csize = nsectors * 512 - (coffset & 511)
+                f.seek(coffset)
+                data = zlib.decompressobj(-15).decompress(f.read(csize), cluster_size)
+                if len(data) < cluster_size:
+                    data = data.ljust(cluster_size, b"\0")
+                out.seek(ci * cluster_size)
+                out.write(data)
+            else:
+                if e & 1:  # explicit zero cluster
+                    continue
+                hoff = e & OFFSET_MASK
+                if not hoff:
+                    continue
+                f.seek(hoff)
+                data = f.read(cluster_size)
+                if data.rstrip(b"\0"):
+                    out.seek(ci * cluster_size)
+                    out.write(data)
+        out.flush()
+        out.close()
+        return size
+
+    def main():
+        args = [a for a in sys.argv[1:] if not a.startswith("--")]
+        if len(args) != 2:
+            die("usage: qcow2_to_raw.py SRC DST [--expect-gpt]")
+        size = convert(args[0], args[1])
+        if "--expect-gpt" in sys.argv:
+            rf = open(args[1], "rb")
+            rf.seek(510)
+            if rf.read(2) != b"\x55\xaa":
+                die("converted image: protective MBR signature missing")
+            rf.seek(512)
+            if rf.read(8) != b"EFI PART":
+                die("converted image: GPT header missing")
+        print("qcow2_to_raw: OK (%d bytes)" % size)
+
+    main()
+    """#
+
+    /// LD_PRELOAD stub: udev_enumerate_scan_devices crashes under Rosetta
+    /// ("realloc(): invalid pointer"); a no-op override is the proven fix.
+    static let udevStubC = """
+    int udev_enumerate_scan_devices(void *e) { (void)e; return 0; }
+    """
+
+    /// Guest-side /usr/local/bin/vivado wrapper.
+    static let vivadoWrapper = """
+    #!/bin/bash
+    # vivado-mac: run x86-64 Vivado under Rosetta with the udev-stub preload
+    for s in /opt/Xilinx/*/Vivado/settings64.sh /opt/Xilinx/Vivado/*/settings64.sh; do
+      if [ -f "$s" ]; then source "$s"; break; fi
+    done
+    bin=$(ls -1 /opt/Xilinx/*/Vivado/bin/vivado /opt/Xilinx/Vivado/*/bin/vivado 2>/dev/null | head -1)
+    if [ -z "$bin" ]; then echo "vivado not found under /opt/Xilinx" >&2; exit 127; fi
+    if [ -f /opt/Xilinx/udev_stub.so ]; then export LD_PRELOAD=/opt/Xilinx/udev_stub.so; fi
+    export XILINXD_LICENSE_FILE=${XILINXD_LICENSE_FILE:-/work/Xilinx.lic}
+    exec "$bin" "$@"
+    """
+
+    /// Guest-side /etc/profile.d/vivado.sh (PATH + license for login shells).
+    static let profileScript = """
+    # vivado-mac environment
+    export XILINXD_LICENSE_FILE=${XILINXD_LICENSE_FILE:-/work/Xilinx.lic}
+    for s in /opt/Xilinx/*/Vivado/settings64.sh /opt/Xilinx/Vivado/*/settings64.sh; do
+      if [ -f "$s" ]; then . "$s"; break; fi
+    done
+    """
+}
