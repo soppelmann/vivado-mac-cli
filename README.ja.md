@@ -14,6 +14,17 @@ Mac (Apple Silicon)
       └─ /work … Mac の ~/vivado-work を virtiofs 共有
 ```
 
+## What's new here(新規性)
+
+Apple Silicon で Vivado を動かす先行例([ichi4096](https://github.com/ichi4096/vivado-on-silicon-mac) の Docker+VNC、[filmil](https://github.com/filmil/vivado-docker) の Docker headless)はいずれも 2025.x まで。本プロジェクトの新規点は4つ:
+
+1. **Vivado 2026.1 を Apple Silicon で動かした初の公開事例**。2026.1 新機能 FeatureStore が `/usr/bin/lscpu` の出力を `std::stoi` でパースするため、ARM 系環境では合成完了後に `stoi` エラーで死ぬ。`__cxa_throw` フックで根本原因を特定し lscpu シムで解決 — 他に文書化された例なし
+2. **コンテナ不使用**。amd64 userland の Docker ではなく「ARM ネイティブ Ubuntu + multiarch x86-64 ライブラリ」構成。Vivado 以外はすべてネイティブ動作、Docker Desktop(企業ライセンス問題)不要、依存は Xcode CLT のみ
+3. **このハイブリッド構成固有の対策群**(Docker では発生しないため未文書だった): ARM bash 用 uname シム、JDK vfork→FORK、IPv4-only NAT × AAAA CDN 対策
+4. **2026.1 のライセンス必須化に対応した設計**(VM MAC の固定・永続化)
+
+限界も明記: Rosetta 2 の保証は macOS 27 まで、速度はネイティブ比 7〜8割、無償 tier は 7-series まで。
+
 ## 必要なもの
 
 - Apple Silicon Mac、macOS 13+(macOS 15+ 推奨: Rosetta 2 の AVX2 対応)

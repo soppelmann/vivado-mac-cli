@@ -17,6 +17,17 @@ Mac (Apple Silicon)
 
 The VM is **not resident**: it auto-boots when you run a command (~30 s) and powers itself off after 15 idle minutes (configurable, `--idle 0` = stay up). A running command always keeps it alive.
 
+## What's new here
+
+Excellent prior art exists for Vivado on Apple Silicon — [ichi4096/vivado-on-silicon-mac](https://github.com/ichi4096/vivado-on-silicon-mac) (Docker + VNC GUI) and [filmil/vivado-docker](https://github.com/filmil/vivado-docker) (Docker headless) — but both target Vivado ≤ 2025.x. As far as we can tell, this project is first on four fronts:
+
+1. **Vivado 2026.1 actually working on Apple Silicon.** 2026.1's new FeatureStore execs `/usr/bin/lscpu` and `std::stoi`'s the values, so on any ARM-flavored environment `synth_design` dies with the bare error `stoi` *after synthesis completes*. We root-caused this with an `__cxa_throw` backtrace hook and fixed it with an lscpu shim — documented nowhere else. If you landed here by googling `vivado synth_design failed stoi`: see the [workaround catalog](#the-rosetta-workaround-catalog).
+2. **No container runtime at all.** Instead of an amd64 userland in Docker, this uses an ARM-native Ubuntu with Debian **multiarch** x86-64 libraries — everything except Vivado itself runs natively. No Docker Desktop (and no Docker Desktop corporate licensing), no image management; the only dependency is the Xcode Command Line Tools.
+3. **A workaround set specific to this hybrid** that container users never see (and therefore never documented): the `uname` shim for installer scripts running under ARM bash, the JDK vfork→FORK fix for Rosetta, IPv4-forcing for AMD's AAAA-resolving CDN inside an IPv4-only NAT.
+4. **Designed for 2026.1's mandatory licensing**: the VM's MAC address is pinned and persisted so the free BASIC-tier node-locked license survives VM rebuilds — prior projects predate license enforcement.
+
+Honest caveats: Rosetta 2 is guaranteed only through macOS 27 (per WWDC 2025), translation costs ~20–30 % versus native x86, and the free tier covers 7-series devices — big UltraScale+ jobs still belong on a real x86 machine.
+
 ## Requirements
 
 - Apple Silicon Mac, macOS 13+ (macOS 15+ recommended — Rosetta 2 gained AVX2 there)
