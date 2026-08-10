@@ -15,6 +15,8 @@ enum Paths {
     static let knownHosts = stateDir.appendingPathComponent("known_hosts")
     static let pidFile = stateDir.appendingPathComponent("vm.pid")
     static let lockFile = stateDir.appendingPathComponent("vm.lock")
+    static let activityLock = stateDir.appendingPathComponent("active.lock")
+    static let activityStamp = stateDir.appendingPathComponent("last-activity")
     static let consoleLog = stateDir.appendingPathComponent("console.log")
     static let vmhostLog = stateDir.appendingPathComponent("vmhost.log")
 }
@@ -26,6 +28,9 @@ struct Config: Codable {
     var workDir: String
     var macAddress: String
     var machineID: String // base64 VZGenericMachineIdentifier
+    var idleMinutes: Int? // auto-shutdown after N idle minutes; 0 = stay resident
+
+    var idleTimeoutMinutes: Int { idleMinutes ?? 15 }
 
     static func load() -> Config? {
         guard let data = try? Data(contentsOf: Paths.configFile) else { return nil }
@@ -214,6 +219,17 @@ func vmhostAlive() -> Bool {
 private func processName(_ pid: pid_t) -> String {
     capture("/bin/ps", ["-p", "\(pid)", "-o", "comm="])
         .output.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// Held (shared) by any CLI process talking to the guest, for its lifetime.
+/// The vmhost probes it with an exclusive try-lock: while any client holds it,
+/// the VM never counts as idle. Kernel-released on client death.
+private var activityFD: Int32 = -1
+func holdActivityLock() {
+    guard activityFD < 0 else { return }
+    activityFD = open(Paths.activityLock.path, O_RDWR | O_CREAT, 0o644)
+    if activityFD >= 0 { flock(activityFD, LOCK_SH) }
+    FileManager.default.createFile(atPath: Paths.activityStamp.path, contents: nil)
 }
 
 func vmPID() -> pid_t? {

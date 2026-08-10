@@ -4,8 +4,10 @@ let usage = """
 vivado-mac — AMD Vivado on Apple Silicon, headless (Virtualization.framework + Rosetta 2)
 
 USAGE:
-  vivado-mac setup [--cpus N] [--memory GiB] [--disk GiB] [--work PATH]
+  vivado-mac setup [--cpus N] [--memory GiB] [--disk GiB] [--work PATH] [--idle MIN]
                           create + provision the Ubuntu 24.04 VM (one-time)
+                          --idle: auto-shutdown after MIN idle minutes
+                                  (default 15, 0 = stay resident)
   vivado-mac install PATH/TO/FPGAs_..._Lin64.bin [--config FILE] [--accept-eulas]
                           install Vivado into the VM (batch mode)
   vivado-mac vivado [ARGS...]   run vivado in the guest (e.g. -mode batch -source x.tcl)
@@ -71,8 +73,11 @@ func spawnVMHost() {
     do { try p.run() } catch { die("failed to spawn VM host: \(error)") }
 }
 
-/// Start the VM if needed and return a reachable guest IP.
+/// Start the VM if needed and return a reachable guest IP. Holds the shared
+/// activity lock for this process's lifetime so the idle auto-shutdown never
+/// fires while a command is running.
 func ensureRunning(_ cfg: Config) -> String {
+    holdActivityLock()
     if vmPID() != nil {
         if let ip = waitForSSH(mac: cfg.macAddress, timeoutSeconds: 15) { return ip }
         die("VM process is running but SSH is unreachable — check \(Paths.vmhostLog.path)")
@@ -90,7 +95,7 @@ func b64(_ s: String) -> String { Data(s.utf8).base64EncodedString() }
 // MARK: - setup
 
 func cmdSetup(_ args: [String]) throws {
-    let (flags, _) = parseFlags(args, valueFlags: ["--cpus", "--memory", "--disk", "--work"])
+    let (flags, _) = parseFlags(args, valueFlags: ["--cpus", "--memory", "--disk", "--work", "--idle"])
     let fm = FileManager.default
 
     switch RosettaState.current() {
@@ -122,6 +127,10 @@ func cmdSetup(_ args: [String]) throws {
         }
     }
     if let v = flags["--work"] { cfg.workDir = (v as NSString).expandingTildeInPath }
+    if let raw = flags["--idle"] {
+        guard let v = Int(raw), v >= 0 else { die("--idle must be minutes >= 0 (0 = stay resident)") }
+        cfg.idleMinutes = v
+    }
 
     try fm.createDirectory(at: Paths.stateDir, withIntermediateDirectories: true)
     try fm.createDirectory(atPath: cfg.workDir, withIntermediateDirectories: true)
@@ -402,7 +411,8 @@ func cmdStatus() {
         print("not set up (run `vivado-mac setup`)")
         return
     }
-    print("config:   \(cfg.cpus) CPUs, \(cfg.memoryGiB) GiB RAM, \(cfg.diskGiB) GiB disk")
+    let idle = cfg.idleTimeoutMinutes == 0 ? "resident" : "\(cfg.idleTimeoutMinutes) min idle shutdown"
+    print("config:   \(cfg.cpus) CPUs, \(cfg.memoryGiB) GiB RAM, \(cfg.diskGiB) GiB disk, \(idle)")
     print("work dir: \(cfg.workDir)")
     print("VM MAC:   \(cfg.macAddress)")
     guard let pid = vmPID() else {

@@ -66,6 +66,10 @@ vivado-mac destroy                                 # VM全削除(~/vivado-work �
 
 プロジェクトは `~/vivado-work`(ゲストの `/work`)に置く。Mac 側のエディタでそのまま編集できる。
 
+VM は**常駐しない**: コマンド実行時に自動起動(約30秒)し、アイドル15分で自動終了する。
+連続作業中(コマンド実行中)は終了しない。挙動は `vivado-mac setup --idle 分数` で変更
+(`0` = 常駐、明示的に `vivado-mac stop` するまで動き続ける)。
+
 ## 検証済み(2026-08-10, M4 Mac / macOS 26.5)
 
 Vivado 2026.1 の **synth → opt → place → route → write_bitstream フルフロー完走**を確認済み

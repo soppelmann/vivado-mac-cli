@@ -127,11 +127,47 @@ final class VMHost: NSObject, VZVirtualMachineDelegate {
                 self.cleanupAndExit(1)
             }
         }
+
+        // Idle auto-shutdown: while no CLI client holds the shared activity
+        // lock and nothing has touched the activity stamp for the configured
+        // window, power the guest off cleanly and exit.
+        if cfg.idleTimeoutMinutes > 0 {
+            let timer = DispatchSource.makeTimerSource(queue: .main)
+            timer.schedule(deadline: .now() + 60, repeating: 60)
+            timer.setEventHandler { [weak self] in
+                self?.checkIdle(minutes: cfg.idleTimeoutMinutes)
+            }
+            timer.resume()
+            idleTimer = timer
+            log("idle auto-shutdown enabled: \(cfg.idleTimeoutMinutes) min")
+        }
+
         RunLoop.main.run()
         fatalError("runloop exited")
     }
 
     private var signalSources: [DispatchSourceSignal] = []
+    private var idleTimer: DispatchSourceTimer?
+    private var lastBusy = Date()
+
+    private func checkIdle(minutes: Int) {
+        let fd = open(Paths.activityLock.path, O_RDWR | O_CREAT, 0o644)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            lastBusy = Date() // a client is mid-command
+            return
+        }
+        flock(fd, LOCK_UN)
+        let attrs = try? FileManager.default.attributesOfItem(atPath: Paths.activityStamp.path)
+        let stamp = (attrs?[.modificationDate] as? Date) ?? .distantPast
+        let last = max(lastBusy, stamp)
+        if Date().timeIntervalSince(last) > Double(minutes) * 60 {
+            log("idle for \(minutes) min — shutting down")
+            idleTimer?.cancel()
+            shutdown()
+        }
+    }
 
     private func shutdown() {
         log("shutdown requested")
