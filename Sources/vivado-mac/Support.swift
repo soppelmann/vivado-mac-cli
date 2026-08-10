@@ -502,7 +502,7 @@ enum Assets {
     if [ -z "$bin" ]; then echo "vivado not found under /opt/Xilinx" >&2; exit 127; fi
     # $PLATFORM expands per-process in ld.so, so ARM launcher scripts load the
     # aarch64 no-op stub and the x86-64 Vivado binaries load the real one.
-    if [ -f /opt/Xilinx/udev_stub_x86_64.so ]; then export LD_PRELOAD='/opt/Xilinx/udev_stub_$PLATFORM.so'; fi
+    if [ -f /opt/Xilinx/udev_stub_x86_64.so ]; then export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}"'/opt/Xilinx/udev_stub_$PLATFORM.so'; fi
     export XILINXD_LICENSE_FILE=${XILINXD_LICENSE_FILE:-/work/Xilinx.lic}
     exec "$bin" "$@"
     """
