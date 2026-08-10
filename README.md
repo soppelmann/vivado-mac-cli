@@ -66,13 +66,31 @@ vivado-mac destroy                                 # VM全削除(~/vivado-work �
 
 プロジェクトは `~/vivado-work`(ゲストの `/work`)に置く。Mac 側のエディタでそのまま編集できる。
 
-## Rosetta 下の既知の注意点
+## 検証済み(2026-08-10, M4 Mac / macOS 26.5)
 
-- **`launch_runs` は避ける**: Rosetta 下では子プロセス spawn 経路がクラッシュしやすい。
-  in-process Tcl(`synth_design` → `opt_design` → `place_design` → `route_design` → `write_bitstream`)を使う
-- libudev クラッシュ(`realloc(): invalid pointer`)は no-op スタブの LD_PRELOAD で回避済み(install が自動設定)。
-  `vivado` は必ずラッパー(/usr/local/bin/vivado)経由で起動される。`xsdb` 等の他ツールを使う場合は
-  `vivado-mac shell` 内で `source /opt/Xilinx/*/Vivado/settings64.sh` を明示的に実行する
+Vivado 2026.1 の **synth → opt → place → route → write_bitstream フルフロー完走**を確認済み
+(xc7a35t 用ビットストリーム生成、無償 BASIC ライセンス使用)。
+
+## Rosetta 下の既知の注意点(このツールが自動対処するもの)
+
+- **xsetup が「32bit 非対応」で即死** → ARM bash の `uname -m` が原因。`/opt/vivado-shim` の
+  uname/arch シムで解決(install/wrapper/profile.d に組込済み)
+- **インストーラの Java が子プロセスを spawn できない** → JDK 既定の vfork が Rosetta で壊れる。
+  `JAVA_TOOL_OPTIONS=-Djdk.lang.Process.launchMechanism=FORK` で解決(profile.d 設定済み)
+- **ダウンロード中の `NoRouteToHost`** → AMD の CDN が AAAA を返すが VZ NAT は IPv4 のみ。
+  `-Djava.net.preferIPv4Stack=true` + ゲスト独立 DNS(1.1.1.1/8.8.8.8)で解決
+- **`synth_design failed / stoi`(2026.1 新規)** → 新機能 FeatureStore が `/usr/bin/lscpu` を
+  絶対パス実行して値を `std::stoi` する。ARM の lscpu は `Socket(s): -` 等を返すため例外。
+  lscpu を dpkg-divert して x86 形式を返すシムに置換(実体は `lscpu.distrib`)
+- **libncurses.so.5 不在** → AMD 同梱の Ubuntu/24 用 x86-64 ncurses5 をシンボリックリンク
+
+## Rosetta 下の残る注意点(ユーザー側)
+
+- **`launch_runs` は避ける**: 子プロセス spawn 経路が壊れやすい。in-process Tcl
+  (`synth_design` → `opt_design` → `place_design` → `route_design` → `write_bitstream`)を使う
+- Vivado が `realloc(): invalid pointer` で落ちたら(2026.1 では未再現):
+  `export LD_PRELOAD=/opt/Xilinx/udev_stub_x86_64.so` を試す
+- `xsdb` 等の他ツールは `vivado-mac shell` 内で `source /opt/Xilinx/*/Vivado/settings64.sh`
 - USB JTAG 書き込みは非対応(headless スコープ外)。ビットストリームは `/work` に出るので、
   書き込みは openFPGALoader(Mac ネイティブ)等を利用
 - Apple は Rosetta 2 の一般提供を macOS 27 まで保証(WWDC 2025)。macOS 28 以降は要注視
