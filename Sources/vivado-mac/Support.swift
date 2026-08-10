@@ -203,44 +203,6 @@ enum Assets {
         lock_passwd: true
         ssh_authorized_keys:
           - @@PUBKEY@@
-    package_update: true
-    # bootcmd runs before the apt modules; amd64 multiarch gives the guest the
-    # x86-64 glibc/X libraries that Rosetta-translated Vivado links against
-    # (an arm64 userland has no /lib64/ld-linux-x86-64.so.2 of its own).
-    bootcmd:
-      - dpkg --add-architecture amd64
-    packages:
-      - locales
-      - unzip
-      - file
-      - ca-certificates
-      - xvfb
-      - gcc-x86-64-linux-gnu
-      - libc6:amd64
-      - libgcc-s1:amd64
-      - libstdc++6:amd64
-      - zlib1g:amd64
-      - libudev1:amd64
-      - libtinfo6:amd64
-      - libncurses6:amd64
-      - libexpat1:amd64
-      - libuuid1:amd64
-      - libfreetype6:amd64
-      - libfontconfig1:amd64
-      - libglib2.0-0t64:amd64
-      - libnss3:amd64
-      - libnspr4:amd64
-      - libsm6:amd64
-      - libice6:amd64
-      - libx11-6:amd64
-      - libxext6:amd64
-      - libxrender1:amd64
-      - libxtst6:amd64
-      - libxi6:amd64
-      - libxrandr2:amd64
-      - libxfixes3:amd64
-      - libxft2:amd64
-      - libxcursor1:amd64
     swap:
       filename: /swap.img
       size: 8589934592
@@ -273,11 +235,37 @@ enum Assets {
 
           [Install]
           WantedBy=multi-user.target
+      - path: /usr/local/sbin/vivado-provision.sh
+        permissions: '0755'
+        content: |
+          #!/bin/bash
+          # amd64 multiarch: the x86-64 glibc/X libraries that Rosetta-translated
+          # Vivado links against (an arm64 userland has no /lib64/ld-linux-x86-64.so.2).
+          # Runs from runcmd (final stage) because cloud-init rewrites
+          # ubuntu.sources during the config stage and would drop the arm64 pin.
+          set -euo pipefail
+          grep -q '^Architectures:' /etc/apt/sources.list.d/ubuntu.sources || \
+            sed -i '/^URIs:/a Architectures: arm64' /etc/apt/sources.list.d/ubuntu.sources
+          dpkg --add-architecture amd64
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            locales unzip file ca-certificates xvfb \
+            gcc-x86-64-linux-gnu:arm64 \
+            libc6:amd64 libgcc-s1:amd64 libstdc++6:amd64 zlib1g:amd64 \
+            libudev1:amd64 libtinfo6:amd64 libncurses6:amd64 libexpat1:amd64 \
+            libuuid1:amd64 libfreetype6:amd64 libfontconfig1:amd64 \
+            libglib2.0-0t64:amd64 libnss3:amd64 libnspr4:amd64 \
+            libsm6:amd64 libice6:amd64 \
+            libx11-6:amd64 libxext6:amd64 libxrender1:amd64 libxtst6:amd64 \
+            libxi6:amd64 libxrandr2:amd64 libxfixes3:amd64 libxft2:amd64 \
+            libxcursor1:amd64
     runcmd:
       - systemctl daemon-reload
       - systemctl enable --now rosetta-binfmt.service
       - ln -sfn /work /home/vivado/work
       - chown -h vivado:vivado /home/vivado/work
+      - /usr/local/sbin/vivado-provision.sh
     """#
 
     static let metaData = """

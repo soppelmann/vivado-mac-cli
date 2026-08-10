@@ -44,6 +44,13 @@ func parseFlags(_ args: [String], valueFlags: Set<String>) -> (flags: [String: S
     return (flags, positional)
 }
 
+/// Two-stage x86-64 check: run the amd64 dynamic linker directly (pure
+/// Rosetta + multiarch glibc), then compile & run a dynamically linked binary.
+let rosettaSmokeTest =
+    "if ! /lib64/ld-linux-x86-64.so.2 --version >/dev/null 2>&1; then echo LDSO_FAIL; " +
+    "elif printf 'int main(){return 42;}' > /tmp/t.c && x86_64-linux-gnu-gcc /tmp/t.c -o /tmp/t42 && /tmp/t42; " +
+    "[ $? -eq 42 ]; then echo ROSETTA_OK; else echo COMPILE_FAIL; fi"
+
 func loadConfigOrDie() -> Config {
     guard let cfg = Config.load() else {
         die("not set up yet — run `vivado-mac setup` first")
@@ -194,14 +201,16 @@ func cmdSetup(_ args: [String]) throws {
     _ = sshExec(ip, "sudo cloud-init status --wait")
 
     note("verifying Rosetta x86-64 execution …")
-    let test = "printf 'int main(){return 42;}' > /tmp/t.c && " +
-        "x86_64-linux-gnu-gcc /tmp/t.c -o /tmp/t42 && /tmp/t42; " +
-        "if [ $? -eq 42 ]; then echo ROSETTA_OK; else echo ROSETTA_FAIL; fi"
-    let (_, out) = sshCapture(ip, test)
+    let (_, out) = sshCapture(ip, rosettaSmokeTest)
     guard out.contains("ROSETTA_OK") else {
-        die("Rosetta smoke test failed — guest cannot run x86-64 binaries. Check `vivado-mac doctor`.")
+        die("""
+        Rosetta smoke test failed (\(out.trimmingCharacters(in: .whitespacesAndNewlines))).
+        Inspect with:  vivado-mac run 'sudo cloud-init status --long'
+                       vivado-mac run 'sudo tail -50 /var/log/cloud-init-output.log'
+        Then retry provisioning with:  vivado-mac run 'sudo /usr/local/sbin/vivado-provision.sh'
+        """)
     }
-    note("Rosetta x86-64 execution: OK")
+    note("Rosetta x86-64 execution: OK (dynamic linking verified)")
 
     print("""
 
@@ -408,11 +417,8 @@ func cmdDoctor() {
     cmdStatus()
     if let cfg = Config.load(), vmPID() != nil,
        let ip = discoverIP(mac: cfg.macAddress) {
-        let test = "printf 'int main(){return 42;}' > /tmp/t.c && " +
-            "x86_64-linux-gnu-gcc /tmp/t.c -o /tmp/t42 && /tmp/t42; " +
-            "if [ $? -eq 42 ]; then echo ROSETTA_OK; else echo ROSETTA_FAIL; fi"
-        let (_, out) = sshCapture(ip, test)
-        print("guest x86-64 exec: \(out.contains("ROSETTA_OK") ? "OK ✓" : "FAIL ✗")")
+        let (_, out) = sshCapture(ip, rosettaSmokeTest)
+        print("guest x86-64 exec: \(out.contains("ROSETTA_OK") ? "OK ✓" : "FAIL ✗ (\(out.trimmingCharacters(in: .whitespacesAndNewlines)))")")
     }
 }
 
