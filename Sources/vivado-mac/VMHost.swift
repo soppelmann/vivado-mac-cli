@@ -25,13 +25,14 @@ enum RosettaState {
 /// detached background process; the CLI talks to the guest over SSH.
 final class VMHost: NSObject, VZVirtualMachineDelegate {
     private var vm: VZVirtualMachine!
+    private var lockFD: Int32 = -1
 
     static func buildConfiguration(_ cfg: Config) throws -> VZVirtualMachineConfiguration {
         let c = VZVirtualMachineConfiguration()
 
         c.cpuCount = max(VZVirtualMachineConfiguration.minimumAllowedCPUCount,
                          min(cfg.cpus, VZVirtualMachineConfiguration.maximumAllowedCPUCount))
-        let requested = UInt64(cfg.memoryGiB) << 30
+        let requested = UInt64(max(1, cfg.memoryGiB)) << 30
         c.memorySize = max(VZVirtualMachineConfiguration.minimumAllowedMemorySize,
                            min(requested, VZVirtualMachineConfiguration.maximumAllowedMemorySize))
 
@@ -93,6 +94,14 @@ final class VMHost: NSObject, VZVirtualMachineDelegate {
 
     func runForever(_ cfg: Config) throws -> Never {
         setsid()
+        // Exclusive VM lock, held for the process lifetime. Auto-released by
+        // the kernel on any death, so it can't go stale; a concurrent second
+        // vmhost exits here before ever touching disk.img.
+        lockFD = open(Paths.lockFile.path, O_RDWR | O_CREAT, 0o644)
+        guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
+            log("another vmhost already holds the VM lock — exiting")
+            exit(3)
+        }
         let config = try VMHost.buildConfiguration(cfg)
         try "\(getpid())\n".write(to: Paths.pidFile, atomically: true, encoding: .utf8)
 

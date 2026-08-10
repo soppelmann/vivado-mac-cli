@@ -57,7 +57,8 @@ AMD アカウントでのトークン認証(対話)→ エディション選択(
 vivado-mac vivado -version
 vivado-mac vivado -mode batch -source build.tcl    # ~/vivado-work がカレント
 vivado-mac vivado -mode tcl                        # 対話 Tcl
-vivado-mac run make                                # ゲストで任意コマンド
+vivado-mac run make                                # ゲストで任意コマンド(複数引数 = argv)
+vivado-mac run 'df -h / && free -h'                # 単一引数 = シェル文字列として解釈
 vivado-mac shell                                   # ゲストにログイン
 vivado-mac start / stop / status / doctor
 vivado-mac destroy                                 # VM全削除(~/vivado-work は残す)
@@ -69,7 +70,9 @@ vivado-mac destroy                                 # VM全削除(~/vivado-work �
 
 - **`launch_runs` は避ける**: Rosetta 下では子プロセス spawn 経路がクラッシュしやすい。
   in-process Tcl(`synth_design` → `opt_design` → `place_design` → `route_design` → `write_bitstream`)を使う
-- libudev クラッシュ(`realloc(): invalid pointer`)は no-op スタブの LD_PRELOAD で回避済み(install が自動設定)
+- libudev クラッシュ(`realloc(): invalid pointer`)は no-op スタブの LD_PRELOAD で回避済み(install が自動設定)。
+  `vivado` は必ずラッパー(/usr/local/bin/vivado)経由で起動される。`xsdb` 等の他ツールを使う場合は
+  `vivado-mac shell` 内で `source /opt/Xilinx/*/Vivado/settings64.sh` を明示的に実行する
 - USB JTAG 書き込みは非対応(headless スコープ外)。ビットストリームは `/work` に出るので、
   書き込みは openFPGALoader(Mac ネイティブ)等を利用
 - Apple は Rosetta 2 の一般提供を macOS 27 まで保証(WWDC 2025)。macOS 28 以降は要注視

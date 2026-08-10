@@ -115,9 +115,12 @@ func cmdSetup(_ args: [String]) throws {
         workDir: fm.homeDirectoryForCurrentUser.appendingPathComponent("vivado-work").path,
         macAddress: "",
         machineID: "")
-    if let v = flags["--cpus"].flatMap(Int.init) { cfg.cpus = v }
-    if let v = flags["--memory"].flatMap(Int.init) { cfg.memoryGiB = v }
-    if let v = flags["--disk"].flatMap(Int.init) { cfg.diskGiB = v }
+    for (flag, path) in [("--cpus", \Config.cpus), ("--memory", \Config.memoryGiB), ("--disk", \Config.diskGiB)] {
+        if let raw = flags[flag] {
+            guard let v = Int(raw), v > 0 else { die("\(flag) must be a positive integer (got '\(raw)')") }
+            cfg[keyPath: path] = v
+        }
+    }
     if let v = flags["--work"] { cfg.workDir = (v as NSString).expandingTildeInPath }
 
     try fm.createDirectory(at: Paths.stateDir, withIntermediateDirectories: true)
@@ -160,11 +163,23 @@ func cmdSetup(_ args: [String]) throws {
             try? fm.removeItem(at: Paths.diskImage)
             die("qcow2 conversion failed")
         }
+        let baseSize = fileSize(Paths.diskImage)
+        let minGiB = Int((baseSize + (1 << 30) - 1) >> 30)
+        guard UInt64(cfg.diskGiB) << 30 >= baseSize else {
+            try? fm.removeItem(at: Paths.diskImage)
+            die("--disk must be at least \(minGiB) GiB (base image size)")
+        }
         let fh = try FileHandle(forWritingTo: Paths.diskImage)
         try fh.truncate(atOffset: UInt64(cfg.diskGiB) << 30)
         try fh.close()
         note("disk resized to \(cfg.diskGiB) GiB (sparse; cloud-init grows the filesystem)")
     } else {
+        // the filesystem was grown on first boot; the size is fixed after creation
+        let actualGiB = Int(fileSize(Paths.diskImage) >> 30)
+        if let want = flags["--disk"].flatMap(Int.init), want != actualGiB {
+            note("disk size is fixed at creation (\(actualGiB) GiB) — `vivado-mac destroy` and re-setup to change it")
+        }
+        cfg.diskGiB = actualGiB
         note("disk.img already exists — keeping it (use `vivado-mac destroy` to reset)")
     }
 
@@ -249,8 +264,9 @@ func cmdInstall(_ args: [String]) throws {
     let ip = ensureRunning(cfg)
 
     note("extracting installer …")
-    guard sshExec(ip, "cd /work && chmod +x \(shellQuote(binName)) && rm -rf /work/.installer && " +
-        "./\(binName) --noexec --nox11 --target /work/.installer") == 0 else {
+    let qBin = shellQuote(binName)
+    guard sshExec(ip, "cd /work && chmod +x \(qBin) && rm -rf /work/.installer && " +
+        "./\(qBin) --noexec --nox11 --target /work/.installer") == 0 else {
         die("installer extraction failed")
     }
 
@@ -264,9 +280,15 @@ func cmdInstall(_ args: [String]) throws {
 
     let guestConfig = "/work/install_config.txt"
     if let local = flags["--config"] {
-        let src = URL(fileURLWithPath: (local as NSString).expandingTildeInPath)
-        try? fm.removeItem(atPath: URL(fileURLWithPath: cfg.workDir).appendingPathComponent("install_config.txt").path)
-        try fm.copyItem(at: src, to: URL(fileURLWithPath: cfg.workDir).appendingPathComponent("install_config.txt"))
+        let src = URL(fileURLWithPath: (local as NSString).expandingTildeInPath).resolvingSymlinksInPath()
+        let dst = URL(fileURLWithPath: cfg.workDir).appendingPathComponent("install_config.txt")
+        guard fm.fileExists(atPath: src.path) else { die("config not found: \(src.path)") }
+        if src.path != dst.resolvingSymlinksInPath().path {
+            try? fm.removeItem(at: dst)
+            try fm.copyItem(at: src, to: dst)
+        }
+        _ = sshExec(ip, "sed -i 's|^Destination=.*|Destination=/opt/Xilinx|' \(guestConfig)")
+        note("Destination forced to /opt/Xilinx (the wrapper and PATH setup expect it)")
     }
     let (_, cfgCheck) = sshCapture(ip, "test -f \(guestConfig) && echo yes")
     if !cfgCheck.contains("yes") {
@@ -333,8 +355,9 @@ func cmdRun(_ args: [String]) {
     guard !args.isEmpty else { die("usage: vivado-mac run CMD [ARGS...]") }
     let cfg = loadConfigOrDie()
     let ip = ensureRunning(cfg)
-    let quoted = args.map(shellQuote).joined(separator: " ")
-    exit(sshExec(ip, "cd /work && \(quoted)", tty: stdinIsTTY))
+    // single arg = shell string (`run 'a && b'`), multiple = quoted argv (`run make -j8`)
+    let cmd = args.count == 1 ? args[0] : args.map(shellQuote).joined(separator: " ")
+    exit(sshExec(ip, "cd /work && \(cmd)", tty: stdinIsTTY))
 }
 
 func cmdShell() {

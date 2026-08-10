@@ -14,6 +14,7 @@ enum Paths {
     static let sshPubKey = stateDir.appendingPathComponent("id_ed25519.pub")
     static let knownHosts = stateDir.appendingPathComponent("known_hosts")
     static let pidFile = stateDir.appendingPathComponent("vm.pid")
+    static let lockFile = stateDir.appendingPathComponent("vm.lock")
     static let consoleLog = stateDir.appendingPathComponent("console.log")
     static let vmhostLog = stateDir.appendingPathComponent("vmhost.log")
 }
@@ -172,10 +173,37 @@ func discoverIP(mac: String) -> String? {
     candidateIPs(mac: mac).first(where: sshReachable)
 }
 
+func fileSize(_ url: URL) -> UInt64 {
+    let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+    return (attrs?[.size] as? UInt64) ?? 0
+}
+
+/// True while a __vmhost process holds the exclusive lock. The kernel releases
+/// flock on any kind of process death, so this cannot go stale like a pid file.
+func vmhostAlive() -> Bool {
+    let fd = open(Paths.lockFile.path, O_RDWR | O_CREAT, 0o644)
+    guard fd >= 0 else { return false }
+    defer { close(fd) }
+    if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+        flock(fd, LOCK_UN)
+        try? FileManager.default.removeItem(at: Paths.pidFile) // stale leftover
+        return false
+    }
+    return true
+}
+
+private func processName(_ pid: pid_t) -> String {
+    capture("/bin/ps", ["-p", "\(pid)", "-o", "comm="])
+        .output.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
 func vmPID() -> pid_t? {
-    guard let s = try? String(contentsOf: Paths.pidFile, encoding: .utf8),
-          let pid = pid_t(s.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
-    return kill(pid, 0) == 0 ? pid : nil
+    guard vmhostAlive(),
+          let s = try? String(contentsOf: Paths.pidFile, encoding: .utf8),
+          let pid = pid_t(s.trimmingCharacters(in: .whitespacesAndNewlines)),
+          kill(pid, 0) == 0,
+          processName(pid).hasSuffix("vivado-mac") else { return nil }
+    return pid
 }
 
 func waitForSSH(mac: String, timeoutSeconds: Int) -> String? {
@@ -417,12 +445,16 @@ enum Assets {
     exec "$bin" "$@"
     """
 
-    /// Guest-side /etc/profile.d/vivado.sh (PATH + license for login shells).
+    /// Guest-side /etc/profile.d/vivado.sh. Deliberately does NOT source
+    /// settings64.sh: that prepends the real Vivado bin dir to PATH, which
+    /// would shadow the /usr/local/bin/vivado wrapper and lose the Rosetta
+    /// udev-stub LD_PRELOAD. Appending keeps the wrapper first for `vivado`
+    /// while still exposing xsdb/updatemem/etc.
     static let profileScript = """
     # vivado-mac environment
     export XILINXD_LICENSE_FILE=${XILINXD_LICENSE_FILE:-/work/Xilinx.lic}
-    for s in /opt/Xilinx/*/Vivado/settings64.sh /opt/Xilinx/Vivado/*/settings64.sh; do
-      if [ -f "$s" ]; then . "$s"; break; fi
-    done
+    vbin=$(ls -d /opt/Xilinx/*/Vivado/bin /opt/Xilinx/Vivado/*/bin 2>/dev/null | head -1)
+    if [ -n "$vbin" ]; then case ":$PATH:" in *":$vbin:"*) ;; *) PATH="$PATH:$vbin" ;; esac; fi
+    unset vbin
     """
 }
