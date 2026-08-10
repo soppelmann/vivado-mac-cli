@@ -490,6 +490,42 @@ enum Assets {
     echo POST_INSTALL_OK
     """
 
+    /// Replaces /usr/bin/lscpu in the guest (real binary kept as lscpu.distrib).
+    /// Vivado 2026.1's FeatureStore execs /usr/bin/lscpu by absolute path and
+    /// std::stoi's the values; the ARM/VZ output has '-' fields and no CPU MHz
+    /// lines, which throws and fails synth_design with the bare error "stoi".
+    static let lscpuShim = """
+    #!/bin/sh
+    # vivado-mac: x86-style lscpu for Vivado's FeatureStore (real: lscpu.distrib)
+    n=$(getconf _NPROCESSORS_ONLN)
+    cat <<EOT
+    Architecture:                    x86_64
+    CPU op-mode(s):                  32-bit, 64-bit
+    Byte Order:                      Little Endian
+    CPU(s):                          $n
+    On-line CPU(s) list:             0-$((n-1))
+    Thread(s) per core:              1
+    Core(s) per socket:              $n
+    Socket(s):                       1
+    NUMA node(s):                    1
+    Vendor ID:                       GenuineIntel
+    CPU family:                      6
+    Model:                           142
+    Model name:                      VirtualApple @ 2.50GHz
+    Stepping:                        10
+    CPU MHz:                         2500.000
+    CPU max MHz:                     2500.0000
+    CPU min MHz:                     2500.0000
+    BogoMIPS:                        5000.00
+    L1d cache:                       64K
+    L1i cache:                       128K
+    L2 cache:                        4096K
+    L3 cache:                        6144K
+    NUMA node0 CPU(s):               0-$((n-1))
+    Flags:                           fpu tsc cx8 apic sep cmov pat pse36 clflush mmx fxsr sse sse2 syscall nx lm rep_good nopl pni pclmulqdq ssse3 cx16 sse4_1 popcnt sse4_2 aes movbe fma avx f16c rdrand bmi1 avx2 bmi2
+    EOT
+    """
+
     /// Guest-side /usr/local/bin/vivado wrapper.
     static let vivadoWrapper = """
     #!/bin/bash
@@ -500,9 +536,10 @@ enum Assets {
     done
     bin=$(ls -1 /opt/Xilinx/*/Vivado/bin/vivado /opt/Xilinx/Vivado/*/bin/vivado 2>/dev/null | head -1)
     if [ -z "$bin" ]; then echo "vivado not found under /opt/Xilinx" >&2; exit 127; fi
-    # $PLATFORM expands per-process in ld.so, so ARM launcher scripts load the
-    # aarch64 no-op stub and the x86-64 Vivado binaries load the real one.
-    if [ -f /opt/Xilinx/udev_stub_x86_64.so ]; then export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}"'/opt/Xilinx/udev_stub_$PLATFORM.so'; fi
+    # The udev stub is NOT preloaded by default: the full 2026.1 synth->bitstream
+    # flow verified clean without it under Rosetta. If Vivado ever dies with
+    # "realloc(): invalid pointer" (libudev under Rosetta), re-enable with:
+    #   export LD_PRELOAD=/opt/Xilinx/udev_stub_x86_64.so
     export XILINXD_LICENSE_FILE=${XILINXD_LICENSE_FILE:-/work/Xilinx.lic}
     exec "$bin" "$@"
     """

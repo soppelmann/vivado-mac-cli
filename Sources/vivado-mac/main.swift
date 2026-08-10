@@ -317,6 +317,9 @@ func cmdInstall(_ args: [String]) throws {
 
     note("post-install: OS libs, Rosetta workarounds, wrappers …")
     _ = sshExec(ip, "echo \(b64(Assets.postInstallScript)) | base64 -d | bash")
+    _ = sshExec(ip, "dpkg-divert --list /usr/bin/lscpu | grep -q lscpu || " +
+        "sudo dpkg-divert --divert /usr/bin/lscpu.distrib --rename --add /usr/bin/lscpu; " +
+        "echo \(b64(Assets.lscpuShim)) | base64 -d | sudo tee /usr/bin/lscpu >/dev/null && sudo chmod +x /usr/bin/lscpu")
     _ = sshExec(ip, "echo \(b64(Assets.vivadoWrapper)) | base64 -d | sudo tee /usr/local/bin/vivado >/dev/null && " +
         "sudo chmod +x /usr/local/bin/vivado")
     _ = sshExec(ip, "echo \(b64(Assets.profileScript)) | base64 -d | sudo tee /etc/profile.d/vivado.sh >/dev/null")
