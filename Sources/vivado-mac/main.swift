@@ -1,5 +1,7 @@
 import Foundation
 
+let version = "0.1.0"
+
 let usage = """
 vivado-mac — AMD Vivado on Apple Silicon, headless (Virtualization.framework + Rosetta 2)
 
@@ -8,8 +10,9 @@ USAGE:
                           create + provision the Ubuntu 24.04 VM (one-time)
                           --idle: auto-shutdown after MIN idle minutes
                                   (default 15, 0 = stay resident)
-  vivado-mac install PATH/TO/FPGAs_..._Lin64.bin [--config FILE] [--accept-eulas]
-                          install Vivado into the VM (batch mode)
+  vivado-mac install [PATH/TO/FPGAs_..._Lin64.bin] [--config FILE] [--accept-eulas]
+                          install Vivado into the VM (batch mode); without a
+                          path, finds the installer in ~/Downloads or the work dir
   vivado-mac vivado [ARGS...]   run vivado in the guest (e.g. -mode batch -source x.tcl)
   vivado-mac run CMD [ARGS...]  run any command in the guest work dir
   vivado-mac shell              interactive shell in the guest
@@ -255,13 +258,30 @@ func cmdSetup(_ args: [String]) throws {
 
 func cmdInstall(_ args: [String]) throws {
     let (flags, positional) = parseFlags(args, valueFlags: ["--config"])
-    guard let installerArg = positional.first else {
-        die("usage: vivado-mac install PATH/TO/FPGAs_..._Lin64.bin [--config FILE] [--accept-eulas]")
-    }
     let cfg = loadConfigOrDie()
     let fm = FileManager.default
-    let installerSrc = URL(fileURLWithPath: (installerArg as NSString).expandingTildeInPath)
-    guard fm.fileExists(atPath: installerSrc.path) else { die("installer not found: \(installerSrc.path)") }
+    let installerSrc: URL
+    if let installerArg = positional.first {
+        installerSrc = URL(fileURLWithPath: (installerArg as NSString).expandingTildeInPath)
+        guard fm.fileExists(atPath: installerSrc.path) else { die("installer not found: \(installerSrc.path)") }
+    } else {
+        // no path given — look in the usual places
+        let candidates = [cfg.workDir, fm.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path]
+            .flatMap { dir in
+                (try? fm.contentsOfDirectory(atPath: dir))?.filter {
+                    $0.hasPrefix("FPGAs_") && $0.hasSuffix("_Lin64.bin")
+                }.map { URL(fileURLWithPath: dir).appendingPathComponent($0) } ?? []
+            }
+        guard let found = candidates.max(by: { fileSize($0) < fileSize($1) }) else {
+            die("""
+            no installer found in the work dir or ~/Downloads.
+            Download FPGAs_AdaptiveSoCs_Unified_SDI_*_Lin64.bin (AMD account required):
+            https://www.amd.com/en/support/downloads/adaptive-socs-and-fpgas/development-tools.html
+            """)
+        }
+        installerSrc = found
+        note("using installer: \(installerSrc.path)")
+    }
     let binName = installerSrc.lastPathComponent
 
     let workInstaller = URL(fileURLWithPath: cfg.workDir).appendingPathComponent(binName)
@@ -484,6 +504,8 @@ do {
     case "__vmhost":
         let cfg = loadConfigOrDie()
         try VMHost().runForever(cfg)
+    case "version", "--version", "-v":
+        print("vivado-mac \(version)")
     case "help", "--help", "-h", nil:
         print(usage)
     default:
