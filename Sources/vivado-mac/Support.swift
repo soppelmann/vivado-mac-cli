@@ -251,7 +251,7 @@ enum Assets {
           apt-get update
           apt-get install -y --no-install-recommends \
             locales unzip file ca-certificates xvfb \
-            gcc-x86-64-linux-gnu:arm64 \
+            gcc-x86-64-linux-gnu:arm64 libc6-dev-amd64-cross \
             libc6:amd64 libgcc-s1:amd64 libstdc++6:amd64 zlib1g:amd64 \
             libudev1:amd64 libtinfo6:amd64 libncurses6:amd64 libexpat1:amd64 \
             libuuid1:amd64 libfreetype6:amd64 libfontconfig1:amd64 \
