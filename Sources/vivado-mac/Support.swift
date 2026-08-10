@@ -133,21 +133,18 @@ private func normalizeMAC(_ mac: String) -> String {
     }.joined(separator: ":")
 }
 
-func leaseIPs(mac: String) -> [String] {
+private func parseLeases() -> [(ip: String, mac: String?)] {
     guard let text = try? String(contentsOfFile: "/var/db/dhcpd_leases", encoding: .utf8) else {
         return []
     }
-    let target = normalizeMAC(mac)
-    var ips: [String] = []
+    var entries: [(ip: String, mac: String?)] = []
     var currentIP: String?
     var currentMAC: String?
     for line in text.split(separator: "\n") {
         let l = line.trimmingCharacters(in: .whitespaces)
         if l == "{" || l == "}" {
             if l == "}" {
-                if let ip = currentIP, let m = currentMAC, normalizeMAC(m) == target {
-                    ips.append(ip)
-                }
+                if let ip = currentIP { entries.append((ip, currentMAC)) }
                 currentIP = nil
                 currentMAC = nil
             }
@@ -156,9 +153,23 @@ func leaseIPs(mac: String) -> [String] {
         if l.hasPrefix("ip_address=") { currentIP = String(l.dropFirst("ip_address=".count)) }
         if l.hasPrefix("hw_address=1,") { currentMAC = String(l.dropFirst("hw_address=1,".count)) }
     }
-    // newest entries tend to be first in the file; keep order, dedupe
+    return entries
+}
+
+/// Lease IPs for our MAC first; if none match (e.g. the guest sent a DUID
+/// client-id), fall back to every leased IP — a wrong VM simply fails our
+/// key-based SSH auth and is skipped.
+func candidateIPs(mac: String) -> [String] {
+    let entries = parseLeases()
+    let target = normalizeMAC(mac)
+    var ips = entries.filter { $0.mac.map(normalizeMAC) == target }.map(\.ip)
+    if ips.isEmpty { ips = entries.map(\.ip) }
     var seen = Set<String>()
     return ips.filter { seen.insert($0).inserted }
+}
+
+func discoverIP(mac: String) -> String? {
+    candidateIPs(mac: mac).first(where: sshReachable)
 }
 
 func vmPID() -> pid_t? {
@@ -170,9 +181,7 @@ func vmPID() -> pid_t? {
 func waitForSSH(mac: String, timeoutSeconds: Int) -> String? {
     let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
     while Date() < deadline {
-        for ip in leaseIPs(mac: mac) where sshReachable(ip) {
-            return ip
-        }
+        if let ip = discoverIP(mac: mac) { return ip }
         Thread.sleep(forTimeInterval: 2)
     }
     return nil
@@ -195,22 +204,43 @@ enum Assets {
         ssh_authorized_keys:
           - @@PUBKEY@@
     package_update: true
+    # bootcmd runs before the apt modules; amd64 multiarch gives the guest the
+    # x86-64 glibc/X libraries that Rosetta-translated Vivado links against
+    # (an arm64 userland has no /lib64/ld-linux-x86-64.so.2 of its own).
+    bootcmd:
+      - dpkg --add-architecture amd64
     packages:
       - locales
       - unzip
       - file
       - ca-certificates
       - xvfb
-      - libx11-6
-      - libxext6
-      - libxrender1
-      - libxtst6
-      - libxi6
-      - libxrandr2
-      - libxfixes3
-      - libxft2
-      - libncurses6
       - gcc-x86-64-linux-gnu
+      - libc6:amd64
+      - libgcc-s1:amd64
+      - libstdc++6:amd64
+      - zlib1g:amd64
+      - libudev1:amd64
+      - libtinfo6:amd64
+      - libncurses6:amd64
+      - libexpat1:amd64
+      - libuuid1:amd64
+      - libfreetype6:amd64
+      - libfontconfig1:amd64
+      - libglib2.0-0t64:amd64
+      - libnss3:amd64
+      - libnspr4:amd64
+      - libsm6:amd64
+      - libice6:amd64
+      - libx11-6:amd64
+      - libxext6:amd64
+      - libxrender1:amd64
+      - libxtst6:amd64
+      - libxi6:amd64
+      - libxrandr2:amd64
+      - libxfixes3:amd64
+      - libxft2:amd64
+      - libxcursor1:amd64
     swap:
       filename: /swap.img
       size: 8589934592
@@ -219,6 +249,13 @@ enum Assets {
       - [rosetta, /media/rosetta, virtiofs, "ro,nofail", "0", "0"]
       - [work, /work, virtiofs, "rw,nofail", "0", "0"]
     write_files:
+      - path: /etc/apt/sources.list.d/ubuntu-amd64.sources
+        content: |
+          Types: deb
+          URIs: http://archive.ubuntu.com/ubuntu
+          Suites: noble noble-updates noble-security
+          Components: main universe restricted multiverse
+          Architectures: amd64
       - path: /etc/rosetta-binfmt.conf
         content: ':rosetta:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/media/rosetta/rosetta:POCF'
       - path: /etc/systemd/system/rosetta-binfmt.service
@@ -246,6 +283,20 @@ enum Assets {
     static let metaData = """
     instance-id: vivado-mac-001
     local-hostname: vivado-mac
+    """
+
+    /// NoCloud network-config: force the DHCP client-id to the MAC address.
+    /// Ubuntu 24.04's networkd sends an RFC-4361 DUID by default, which makes
+    /// macOS record `hw_address=ff,<duid>` in /var/db/dhcpd_leases and breaks
+    /// MAC-based guest-IP discovery (same fix Lima uses).
+    static let networkConfig = """
+    version: 2
+    ethernets:
+      vmnet:
+        match:
+          name: "en*"
+        dhcp4: true
+        dhcp-identifier: mac
     """
 
     /// qcow2 -> raw converter, Python stdlib only. Written to the state dir and

@@ -180,6 +180,8 @@ func cmdSetup(_ args: [String]) throws {
             .write(to: seedDir.appendingPathComponent("user-data"), atomically: true, encoding: .utf8)
         try Assets.metaData
             .write(to: seedDir.appendingPathComponent("meta-data"), atomically: true, encoding: .utf8)
+        try Assets.networkConfig
+            .write(to: seedDir.appendingPathComponent("network-config"), atomically: true, encoding: .utf8)
         guard run("/usr/bin/hdiutil",
                   ["makehybrid", "-iso", "-joliet", "-ov", "-default-volume-name", "cidata",
                    "-o", Paths.seedISO.path, seedDir.path], quiet: true) == 0 else {
@@ -350,7 +352,7 @@ func cmdStop() {
         return
     }
     let cfg = loadConfigOrDie()
-    if let ip = leaseIPs(mac: cfg.macAddress).first(where: sshReachable) {
+    if let ip = discoverIP(mac: cfg.macAddress) {
         note("shutting down guest …")
         _ = sshExec(ip, "sudo shutdown -h now")
     }
@@ -378,7 +380,7 @@ func cmdStatus() {
         return
     }
     print("VM:       running (pid \(pid))")
-    guard let ip = leaseIPs(mac: cfg.macAddress).first(where: sshReachable) else {
+    guard let ip = discoverIP(mac: cfg.macAddress) else {
         print("SSH:      unreachable")
         return
     }
@@ -405,7 +407,7 @@ func cmdDoctor() {
     print("  disk.img: \(fm.fileExists(atPath: Paths.diskImage.path) ? "present ✓" : "missing ✗")")
     cmdStatus()
     if let cfg = Config.load(), vmPID() != nil,
-       let ip = leaseIPs(mac: cfg.macAddress).first(where: sshReachable) {
+       let ip = discoverIP(mac: cfg.macAddress) {
         let test = "printf 'int main(){return 42;}' > /tmp/t.c && " +
             "x86_64-linux-gnu-gcc /tmp/t.c -o /tmp/t42 && /tmp/t42; " +
             "if [ $? -eq 42 ]; then echo ROSETTA_OK; else echo ROSETTA_FAIL; fi"
