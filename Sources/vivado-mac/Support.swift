@@ -64,6 +64,23 @@ func run(_ tool: String, _ args: [String], quiet: Bool = false) -> Int32 {
     return p.terminationStatus
 }
 
+/// Interactive spawn: unlike Foundation's Process (which puts the child in a
+/// new process group, so any terminal read stops it with SIGTTIN), plain
+/// posix_spawn keeps the child in our foreground process group and the
+/// terminal works normally.
+func runInteractive(_ tool: String, _ args: [String]) -> Int32 {
+    var pid: pid_t = 0
+    var argv: [UnsafeMutablePointer<CChar>?] = ([tool] + args).map { strdup($0) }
+    argv.append(nil)
+    defer { argv.compactMap { $0 }.forEach { free($0) } }
+    let rc = posix_spawn(&pid, tool, nil, nil, &argv, environ)
+    guard rc == 0 else { return -1 }
+    var status: Int32 = 0
+    while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+    if (status & 0x7f) == 0 { return (status >> 8) & 0xff }
+    return 128 + (status & 0x7f)
+}
+
 func capture(_ tool: String, _ args: [String]) -> (status: Int32, output: String) {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: tool)
@@ -96,13 +113,15 @@ private func sshBaseArgs(ip: String) -> [String] {
 }
 
 /// Run `cmd` in the guest through a login shell (so /etc/profile.d is sourced).
+/// tty:true allocates a pty and spawns in our own process group so the user
+/// can type into prompts (AuthTokenGen, ConfigGen, vivado -mode tcl, …).
 @discardableResult
 func sshExec(_ ip: String, _ cmd: String, tty: Bool = false) -> Int32 {
     var args = ["-o", "ConnectTimeout=10"]
     if tty { args.append("-t") }
     args += sshBaseArgs(ip: ip)
     args += ["--", "bash", "-lc", shellQuote(cmd)]
-    return run("/usr/bin/ssh", args)
+    return tty ? runInteractive("/usr/bin/ssh", args) : run("/usr/bin/ssh", args)
 }
 
 func sshCapture(_ ip: String, _ cmd: String) -> (status: Int32, output: String) {
@@ -121,7 +140,7 @@ func sshReachable(_ ip: String) -> Bool {
 
 /// Interactive login shell.
 func sshInteractive(_ ip: String) -> Int32 {
-    run("/usr/bin/ssh", ["-t"] + sshBaseArgs(ip: ip))
+    runInteractive("/usr/bin/ssh", ["-t"] + sshBaseArgs(ip: ip))
 }
 
 // MARK: - Guest IP discovery (macOS DHCP leases for VZNATNetworkDeviceAttachment)
