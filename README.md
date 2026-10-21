@@ -93,6 +93,7 @@ vivado-mac gui proj/top.xpr   # open a project (paths relative to ~/vivado-work)
 vivado-mac run --x11 CMD      # any other X11 program in the guest
 vivado-mac shell --x11        # shell with the display forwarded
 vivado-mac tcl 'CMD'          # send Tcl into the running GUI session; no CMD = a vivado% prompt
+vivado-mac projects           # list the .xpr projects in ~/vivado-work (part, last modified)
 ```
 
 **Tcl from the Mac terminal while the GUI is open.** Vivado has no remote Tcl, and after `start_gui` its console lives in the GUI only. `vivado-mac gui` therefore sources a small bridge (`/work/.vivado-mac/tclserver.tcl`, a `socket -server` on 127.0.0.1 inside the VM, reachable only over vivado-mac's ssh) and `vivado-mac tcl` talks to it: `vivado-mac tcl 'open_project /work/p/p.xpr'`, `vivado-mac tcl 'launch_runs synth_1'`, or plain `vivado-mac tcl` for a prompt with history. Commands run in the GUI's interpreter, so the IDE updates live. What a command *prints* (`puts`, `report_*` without `-return_string`) still lands in the GUI's Tcl Console; the command's return value is what comes back. For a GUI started some other way, run `source /work/.vivado-mac/tclserver.tcl` in its Tcl Console once.
