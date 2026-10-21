@@ -17,7 +17,8 @@ module hello #(
     input  logic clk,   // PL clock from the module/carrier (see te0820.xdc)
     input  logic btn,   // push button; set BTN_ACTIVE_LOW below to match the board
     input  logic [0:0] force_on, // phase 2: AXI GPIO bit 0 from the PS (FreeBSD) forces the LED on
-    output logic led
+    output logic led,
+    output logic [31:0] tick     // phase 2: free-running clock counter, readable by the PS (GPIO channel 2)
 );
     // Many carrier boards wire buttons active-low (pressed = 0). Flip this if
     // the LED flashes while the button is NOT pressed.
@@ -49,4 +50,8 @@ module hello #(
 
     // 3. the LED: blink while pressed, or steady on when the CPU says so
     always_comb led = (pressed & blink) | force_on[0];
+
+    // 4. proof of life without any parts attached: counts clocks (wraps every ~43 s at 100 MHz);
+    //    two reads from the PS a moment apart must differ
+    always_ff @(posedge clk) tick <= tick + 32'd1;
 endmodule

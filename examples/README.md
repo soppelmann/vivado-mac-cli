@@ -118,6 +118,10 @@ an HP bank: the carrier's VIOTA rail must be **1.8 V** (`LVCMOS18`); the J5 pin 
 derivation (carrier TRM → B2B connector → module schematic) is in `pmod_j5.xdc`.
 
 - **phase1**: `te0820::ps` + `hello.sv`; holding the button flashes the LED at 2 Hz.
-- **phase2**: adds `te0820::ps -axi 1` and `te0820::axi_gpio axi_gpio_0 1 0x80000000`; GPIO bit 0
-  forces the LED on. `sw/axiled` (`on|off|blink [ms]|read [addr]`) drives it from FreeBSD via
-  `/dev/mem`, and `axiled read` works against any AXI slave at that address.
+- **phase2**: adds `te0820::ps -axi 1` and a dual-channel `te0820::axi_gpio` at `0x8000_0000`:
+  channel 1 (reg `0x00`, output) bit 0 forces the LED on; channel 2 (reg `0x08`, input) reads a
+  free-running 100 MHz counter from the PL. `sw/axiled` (`on|off|blink [ms]|ticks|read [addr]`)
+  drives and observes it from FreeBSD via `/dev/mem`. `axiled ticks` reads the counter twice,
+  10 ms apart, and reports the delta (about 1,000,000): a changing value proves the bitstream is
+  loaded and the fabric clocked, with nothing attached to the board. `axiled read` works against
+  any AXI slave at that address.
