@@ -738,10 +738,12 @@ enum Assets {
                 if {[eof $chan]} { catch {close $chan} }
                 return
             }
-            if {[catch {uplevel #0 $line} result]} {
-                puts $chan "ERROR: $result"
-            } else {
+            # rc 2 is TCL_RETURN: a top-level `return "x"` is a result, not an error
+            set rc [catch {uplevel #0 $line} result]
+            if {$rc == 0 || $rc == 2} {
                 puts $chan $result
+            } else {
+                puts $chan "ERROR: $result"
             }
             puts $chan "<<vmtcl-end>>"
         }
@@ -775,7 +777,7 @@ enum Assets {
       exec 3>&- 3<&-
     }
     if [ $# -gt 0 ]; then send "$*"; exit $?; fi
-    send 'puts -nonewline {}; return "connected to Vivado [version -short], project: [catch {current_project} p; set p]"'
+    send 'if {[catch {current_project} p]} {set p "(none open)"}; return "connected: Vivado [version -short], project $p — Ctrl-D to leave"'
     while IFS= read -r -e -p 'vivado% ' line; do
       [ -n "$line" ] && { history -s "$line"; send "$line"; }
     done
