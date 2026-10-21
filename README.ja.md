@@ -94,7 +94,7 @@ vivado-mac run --x11 CMD      # 任意の X11 プログラム
 - XQuartz 初回導入後は一度ログアウト/ログイン(launchd が `DISPLAY` を設定する)
 - GUI の「Run Synthesis / Implementation」は `launch_runs`(子プロセス)経由で、Rosetta 下で壊れやすい既知の経路。落ちる場合はビルドだけ in-process Tcl で回し、GUI はプロジェクト構成・IP Integrator・回路図/デバイスビュー・Hardware Manager に使う
 - 既知の癖: 真っ黒なウィンドウはリサイズすると描画される。macOS 27 の Mission Control は X11 ウィンドウを最小化できない([#519](https://github.com/XQuartz/XQuartz/issues/519)、Apple 側のバグ)。描画はネイティブより遅い
-- **状態(2026-10)**: X11 経路は検証済み — `gui-setup` の表示テストと AMD の Java 製インストーラ GUI が macOS 27 の XQuartz 2.8.6 上で描画された。ついでに判明・修正: `~/.ssh/config` の `ControlMaster auto` があると転送セッションに `DISPLAY` が渡らない。vivado-mac は自身の ssh では接続共有を無効化するようにした
+- **状態(2026-10): 検証済み**。`vivado-mac gui` で Vivado 2026.1 の IDE(メインウィンドウ + Welcome ダイアログ)が macOS 27 の XQuartz 2.8.6 上にネイティブウィンドウとして開く。AMD の Java 製インストーラ GUI も同様に動作。GUI からの Run Synthesis(`launch_runs` の子プロセス経路)は未検証。ついでに判明・修正: `~/.ssh/config` の `ControlMaster auto` があると転送セッションに `DISPLAY` が渡らない。vivado-mac は自身の ssh では接続共有を無効化するようにした
 
 ### USB JTAG ケーブル(任意、USB/IP 経由)
 
