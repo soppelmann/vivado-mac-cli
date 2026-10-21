@@ -4,7 +4,7 @@ Run AMD **Vivado 2026.1 natively-ish on Apple Silicon Macs** — headless (CLI) 
 
 A zero-dependency Swift CLI (`vivado-mac`) drives Apple's **Virtualization.framework** directly: it boots an Ubuntu 24.04 ARM64 VM, injects **Rosetta 2** into it, and runs the x86-64 Linux Vivado at near-native speed over SSH.
 
-**Verified end-to-end** (M4 Mac, macOS 26.5, 2026-08): full `synth_design → opt_design → place_design → route_design → write_bitstream` flow producing a working bitstream for an Artix-7 (xc7a35t), using the free BASIC-tier license.
+**Verified end-to-end** (M4 Mac, macOS 26.5, 2026-08): full `synth_design → opt_design → place_design → route_design → write_bitstream` flow producing a working bitstream for an Artix-7 (xc7a35t), using the free BASIC-tier license. **Second verification** (M1 Pro, macOS 27.0.1, 2026-10): same flow for a **Zynq UltraScale+ ZU2EG** (`xczu2eg-sbva484-1-e`), 2 min 23 s wall time for a small design, BASIC license; Vivado installed through AMD's GUI installer over XQuartz (`install --gui`), and a guest `fstrim` returned 112 GiB of freed blocks to the Mac — so the sparse disk really does shrink.
 
 ```
 Mac (Apple Silicon)
@@ -100,7 +100,7 @@ This is plain **`ssh -Y` X11 forwarding** into the same headless VM — Vivado's
 - After a first-time XQuartz install, log out and back in once (launchd sets `DISPLAY` at login). `vivado-mac` finds the display socket without it, other X11 tools won't.
 - **Run Synthesis / Implementation from the GUI uses `launch_runs`** (see below) — the one path known to be flaky under Rosetta. If a run dies, drive the build from in-process Tcl and use the GUI for everything else (project setup, IP integrator, schematic/device views, hardware manager, reports).
 - Known quirks: a window that stays black → resize it once (XQuartz redraw); macOS 27 Mission Control can't minimize X11 windows ([#519](https://github.com/XQuartz/XQuartz/issues/519), Apple bug); Java2D over a forwarded display is slower than native — the wrapper already sets `-Dsun.java2d.pmoffscreen=false`, and `J2D_USE_MITSHM=false` / `_JAVA_AWT_WM_NONREPARENTING=1` are documented opt-ins in `/usr/local/bin/vivado`.
-- **Status: implemented, not yet verified on hardware** (2026-10). The headless flow is unaffected either way.
+- **Status (2026-10):** the X11 path is verified — `gui-setup`'s display test and AMD's full Java installer GUI render on XQuartz 2.8.6 under Rosetta on macOS 27. Vivado's own IDE window: see the Verified line at the top for the latest. Found and fixed on the way: an `~/.ssh/config` with `ControlMaster auto` made forwarded sessions get no `DISPLAY`; vivado-mac now disables connection sharing for its own ssh calls.
 
 ### USB JTAG cable (optional, over USB/IP)
 

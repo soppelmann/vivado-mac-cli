@@ -94,7 +94,7 @@ vivado-mac run --x11 CMD      # 任意の X11 プログラム
 - XQuartz 初回導入後は一度ログアウト/ログイン(launchd が `DISPLAY` を設定する)
 - GUI の「Run Synthesis / Implementation」は `launch_runs`(子プロセス)経由で、Rosetta 下で壊れやすい既知の経路。落ちる場合はビルドだけ in-process Tcl で回し、GUI はプロジェクト構成・IP Integrator・回路図/デバイスビュー・Hardware Manager に使う
 - 既知の癖: 真っ黒なウィンドウはリサイズすると描画される。macOS 27 の Mission Control は X11 ウィンドウを最小化できない([#519](https://github.com/XQuartz/XQuartz/issues/519)、Apple 側のバグ)。描画はネイティブより遅い
-- **状態: 実装済み、実機未検証**(2026-10)。headless フローには影響しない
+- **状態(2026-10)**: X11 経路は検証済み — `gui-setup` の表示テストと AMD の Java 製インストーラ GUI が macOS 27 の XQuartz 2.8.6 上で描画された。ついでに判明・修正: `~/.ssh/config` の `ControlMaster auto` があると転送セッションに `DISPLAY` が渡らない。vivado-mac は自身の ssh では接続共有を無効化するようにした
 
 ### USB JTAG ケーブル(任意、USB/IP 経由)
 
@@ -121,6 +121,8 @@ VM は**常駐しない**: コマンド実行時に自動起動(約30秒)し、�
 
 Vivado 2026.1 の **synth → opt → place → route → write_bitstream フルフロー完走**を確認済み
 (xc7a35t 用ビットストリーム生成、無償 BASIC ライセンス使用)。
+
+2026-10-21(M1 Pro / macOS 27.0.1)に **Zynq UltraScale+ ZU2EG**(`xczu2eg-sbva484-1-e`)でも同フローを確認(小規模デザインで 2分23秒、BASIC ライセンス、`install --gui` で導入)。ゲストの `fstrim` で 112 GiB が Mac 側に返却され、スパースディスクが実際に縮むことも確認。
 
 ## Rosetta 下の既知の注意点(このツールが自動対処するもの)
 
