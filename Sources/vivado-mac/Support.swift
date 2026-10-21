@@ -758,30 +758,23 @@ enum Assets {
     ::vmtcl::start
     """
 
-    /// Guest-side client: `client PORT [CMD...]`. One connection per command,
-    /// via bash's /dev/tcp (no netcat needed). Without CMD: a readline prompt.
+    /// Guest-side client: `client PORT CMD...` — one connection per command,
+    /// via bash's /dev/tcp (no netcat needed). The interactive prompt lives on
+    /// the Mac side (cmdTcl), which just calls this once per line.
     static let tclBridgeClient = """
     #!/bin/bash
     port=$1; shift
-    send() {
-      if ! { exec 3<>/dev/tcp/127.0.0.1/$port; } 2>/dev/null; then
-        echo "no Tcl bridge on port $port. Start Vivado with 'vivado-mac gui' (loads it automatically)," >&2
-        echo "or in the GUI's Tcl Console run:  source /work/.vivado-mac/tclserver.tcl" >&2
-        return 2
-      fi
-      printf '%s\n' "$1" >&3
-      while IFS= read -r l <&3; do
-        [ "$l" = "<<vmtcl-end>>" ] && break
-        printf '%s\n' "$l"
-      done
-      exec 3>&- 3<&-
-    }
-    if [ $# -gt 0 ]; then send "$*"; exit $?; fi
-    send 'if {[catch {current_project} p]} {set p "(none open)"}; return "connected: Vivado [version -short], project $p — Ctrl-D to leave"'
-    while IFS= read -r -e -p 'vivado% ' line; do
-      [ -n "$line" ] && { history -s "$line"; send "$line"; }
+    if ! { exec 3<>/dev/tcp/127.0.0.1/$port; } 2>/dev/null; then
+      echo "no Tcl bridge on port $port — is Vivado running? Start it with 'vivado-mac gui' (loads the bridge)," >&2
+      echo "or in the GUI's Tcl Console run:  source /work/.vivado-mac/tclserver.tcl" >&2
+      exit 2
+    fi
+    printf '%s\n' "$*" >&3
+    while IFS= read -r l <&3; do
+      [ "$l" = "<<vmtcl-end>>" ] && break
+      printf '%s\n' "$l"
     done
-    echo
+    exec 3>&- 3<&-
     """
 
     static let usbipDetachScript = """

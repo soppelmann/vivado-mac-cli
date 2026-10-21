@@ -22,6 +22,7 @@ USAGE:
   vivado-mac vivado [ARGS...]   run vivado in the guest (e.g. -mode batch -source x.tcl)
   vivado-mac gui [ARGS...]      run the Vivado GUI; windows open on the Mac via XQuartz
   vivado-mac tcl [CMD...]       send Tcl to the running GUI session (no CMD: a prompt)
+  vivado-mac projects           list Vivado projects (.xpr) in the work dir
   vivado-mac gui-setup [--yes]  one-time GUI prep: XQuartz on the Mac (via Homebrew),
                           X11 forwarding packages in the guest, display test
   vivado-mac run [--x11] CMD [ARGS...]  run any command in the guest work dir
@@ -514,6 +515,48 @@ func cmdGUI(_ args: [String]) {
     exit(sshExec(ip, "cd /work && vivado \(quoted)", tty: stdinIsTTY, x11: true))
 }
 
+// MARK: - projects
+
+/// Vivado projects under the work dir, newest first. Mac-side only (the work
+/// dir is shared), so it needs no VM. Prints the path form `gui` accepts.
+func cmdProjects() {
+    let cfg = loadConfigOrDie()
+    let fm = FileManager.default
+    let root = URL(fileURLWithPath: cfg.workDir)
+    guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
+                                     options: [.skipsHiddenFiles]) else { die("cannot read \(cfg.workDir)") }
+    var found: [(rel: String, part: String, date: Date)] = []
+    for case let url as URL in walker {
+        let name = url.lastPathComponent
+        // skip the extracted installer and Vivado's own per-project caches
+        if name == ".installer" || name.hasSuffix(".cache") || name.hasSuffix(".runs") || name.hasSuffix(".hw")
+            || name.hasSuffix(".sim") || name.hasSuffix(".ip_user_files") || name.hasSuffix(".gen") {
+            walker.skipDescendants(); continue
+        }
+        guard url.pathExtension == "xpr" else { continue }
+        let rel = String(url.path.dropFirst(root.path.count + 1))
+        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        var part = "?"
+        if let r = text.range(of: #"<Option Name="Part" Val="[^"]+""#, options: .regularExpression) {
+            // the match ends with Val="<part>" — take what's between the last two quotes
+            let quoted = text[r].split(separator: "\"")
+            if quoted.count >= 4 { part = String(quoted[3]) }
+        }
+        let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+        found.append((rel, part, date))
+    }
+    guard !found.isEmpty else {
+        print("no Vivado projects (.xpr) under \(cfg.workDir)")
+        return
+    }
+    let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd HH:mm"
+    let width = found.map(\.rel.count).max() ?? 20
+    for p in found.sorted(by: { $0.date > $1.date }) {
+        print("\(p.rel.padding(toLength: width, withPad: " ", startingAt: 0))  \(p.part.padding(toLength: 24, withPad: " ", startingAt: 0))  \(df.string(from: p.date))")
+    }
+    print("\nopen one:  vivado-mac gui <path>      (or: vivado-mac tcl 'open_project /work/<path>')")
+}
+
 // MARK: - Tcl bridge into the running GUI
 
 let tclBridgePort = 8234
@@ -538,9 +581,28 @@ func cmdTcl(_ args: [String]) {
     let cfg = loadConfigOrDie()
     let ip = ensureRunning(cfg)
     writeTclBridge(cfg)
-    let quoted = args.map(shellQuote).joined(separator: " ")
-    exit(sshExec(ip, "echo \(b64(Assets.tclBridgeClient)) | base64 -d > /tmp/vmtcl.sh && bash /tmp/vmtcl.sh \(tclBridgePort) \(quoted)",
-                 tty: args.isEmpty))
+    // install the guest-side client once per invocation
+    guard sshExec(ip, "echo \(b64(Assets.tclBridgeClient)) | base64 -d > /tmp/vmtcl.sh") == 0 else {
+        die("could not reach the guest")
+    }
+    func send(_ line: String) -> Int32 {
+        sshExec(ip, "bash /tmp/vmtcl.sh \(tclBridgePort) \(shellQuote(line))")
+    }
+    if !args.isEmpty { exit(send(args.joined(separator: " "))) }
+
+    // Interactive: the prompt runs here on the Mac; each line is one ssh round
+    // trip into the bridge (a few hundred ms). Ctrl-D leaves; Vivado stays up.
+    let hello = send(#"if {[catch {current_project} p]} {set p "(none open)"}; return "connected: Vivado [version -short], project $p — Ctrl-D to leave""#)
+    guard hello == 0 else { exit(hello) }
+    while true {
+        print("vivado% ", terminator: "")
+        fflush(stdout)
+        guard let line = readLine() else { print(""); break }
+        let t = line.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { continue }
+        if t == "exit" || t == "quit" { break }   // leave the prompt, not Vivado
+        _ = send(t)
+    }
 }
 
 func cmdGUISetup(_ args: [String]) {
@@ -725,6 +787,7 @@ do {
     case "shell": cmdShell(Array(argv.dropFirst()))
     case "gui": cmdGUI(Array(argv.dropFirst()))
     case "tcl": cmdTcl(Array(argv.dropFirst()))
+    case "projects": cmdProjects()
     case "gui-setup": cmdGUISetup(Array(argv.dropFirst()))
     case "jtag": cmdJTAG(Array(argv.dropFirst()))
     case "start": cmdStart()
