@@ -726,8 +726,10 @@ enum Assets {
     /// console; the command's return value is what comes back over the bridge.
     static let tclBridgeServer = """
     # vivado-mac Tcl bridge — lets `vivado-mac tcl` drive this session from the Mac.
+    # Each Vivado instance takes the first free port from 8234 and registers it
+    # under /work/.vivado-mac/sessions/<port>, so several GUIs can run at once.
     namespace eval ::vmtcl {
-        variable port 8234
+        variable port
         variable sock
         proc accept {chan addr p} {
             fconfigure $chan -buffering line -blocking 0 -translation lf
@@ -751,7 +753,21 @@ enum Assets {
             variable port
             variable sock
             if {[info exists sock]} { return }
-            set sock [socket -server ::vmtcl::accept -myaddr 127.0.0.1 $port]
+            for {set p 8234} {$p < 8260} {incr p} {
+                if {![catch {socket -server ::vmtcl::accept -myaddr 127.0.0.1 $p} s]} {
+                    set sock $s
+                    set port $p
+                    break
+                }
+            }
+            if {![info exists sock]} { puts "vivado-mac Tcl bridge: no free port in 8234-8259"; return }
+            set dir /work/.vivado-mac/sessions
+            catch {
+                file mkdir $dir
+                set f [open $dir/$port w]
+                puts $f "pid=[pid] started=[clock format [clock seconds] -format %H:%M]"
+                close $f
+            }
             puts "vivado-mac Tcl bridge listening on 127.0.0.1:$port  (from the Mac: vivado-mac tcl 'CMD', or vivado-mac tcl for a prompt)"
         }
     }
@@ -765,16 +781,35 @@ enum Assets {
     #!/bin/bash
     port=$1; shift
     if ! { exec 3<>/dev/tcp/127.0.0.1/$port; } 2>/dev/null; then
-      echo "no Tcl bridge on port $port — is Vivado running? Start it with 'vivado-mac gui' (loads the bridge)," >&2
-      echo "or in the GUI's Tcl Console run:  source /work/.vivado-mac/tclserver.tcl" >&2
+      echo "no Tcl bridge on port $port — is that Vivado still running? (vivado-mac tcl --list)" >&2
       exit 2
     fi
-    printf '%s\n' "$*" >&3
+    printf '%s\\n' "$*" >&3
     while IFS= read -r l <&3; do
       [ "$l" = "<<vmtcl-end>>" ] && break
-      printf '%s\n' "$l"
+      printf '%s\\n' "$l"
     done
     exec 3>&- 3<&-
+    """
+
+    /// Guest-side discovery: prints `PORT<TAB>PROJECT` per live bridge. Probes
+    /// each registered port (and 8234 for a bridge loaded by hand), removes
+    /// registrations whose Vivado has gone away.
+    static let tclBridgeDiscover = """
+    #!/bin/bash
+    dir=/work/.vivado-mac/sessions
+    ports=$(ls "$dir" 2>/dev/null; echo 8234)
+    for port in $(echo "$ports" | sort -un); do
+      if { exec 3<>/dev/tcp/127.0.0.1/$port; } 2>/dev/null; then
+        printf '%s\\n' 'if {[catch {current_project} p]} {set p "(no project)"}; return $p' >&3
+        proj=
+        while IFS= read -r l <&3; do [ "$l" = "<<vmtcl-end>>" ] && break; proj=$l; done
+        exec 3>&- 3<&-
+        printf '%s\\t%s\\n' "$port" "$proj"
+      else
+        rm -f "$dir/$port" 2>/dev/null
+      fi
+    done
     """
 
     static let usbipDetachScript = """

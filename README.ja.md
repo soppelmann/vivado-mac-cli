@@ -90,7 +90,7 @@ vivado-mac tcl 'CMD'          # 起動中の GUI セッションに Tcl を送�
 vivado-mac projects           # ~/vivado-work 内の .xpr プロジェクト一覧(パーツ、更新日時)
 ```
 
-**GUI を開いたまま Mac のターミナルから Tcl**: Vivado にリモート Tcl は無く、`start_gui` 後はコンソールが GUI 側に移る。そこで `vivado-mac gui` は小さなブリッジ(`/work/.vivado-mac/tclserver.tcl`、VM 内 127.0.0.1 の `socket -server`。vivado-mac の ssh 経由でしか届かない)を source し、`vivado-mac tcl` がそこへコマンドを送る。GUI のインタプリタで実行されるので IDE に即反映。コマンドが *print* する出力(`puts`、`-return_string` 無しの `report_*`)は GUI の Tcl Console 側に出る。別の方法で起動した GUI では Tcl Console で一度 `source /work/.vivado-mac/tclserver.tcl` を実行する。
+**GUI を開いたまま Mac のターミナルから Tcl**: Vivado にリモート Tcl は無く、`start_gui` 後はコンソールが GUI 側に移る。そこで `vivado-mac gui` は小さなブリッジ(`/work/.vivado-mac/tclserver.tcl`、VM 内 127.0.0.1 の `socket -server`。vivado-mac の ssh 経由でしか届かない)を source し、`vivado-mac tcl` がそこへコマンドを送る。GUI のインタプリタで実行されるので IDE に即反映。コマンドが *print* する出力(`puts`、`-return_string` 無しの `report_*`)は GUI の Tcl Console 側に出る。別の方法で起動した GUI では Tcl Console で一度 `source /work/.vivado-mac/tclserver.tcl` を実行する。複数 GUI の同時起動も可: 各インスタンスが 8234 から空きポートを取り `/work/.vivado-mac/sessions/` に登録する。`vivado-mac tcl --list` でプロジェクト名付き一覧、`--project NAME` / `--port N` で選択。1つだけなら選択不要。
 
 仕組みは単純な **`ssh -Y` の X11 転送**。Vivado の Java/Swing GUI は X11 を話し、XQuartz が X サーバになる。VNC もデスクトップ環境も仮想 GPU も不要で、VM は headless 構成に arm64 の小パッケージ4つ(`xauth`、フォント、`xdpyinfo`)を足しただけ。GUI セッション中はアイドル自動終了は働かない。
 

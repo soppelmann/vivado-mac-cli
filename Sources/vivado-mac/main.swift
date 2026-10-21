@@ -22,6 +22,7 @@ USAGE:
   vivado-mac vivado [ARGS...]   run vivado in the guest (e.g. -mode batch -source x.tcl)
   vivado-mac gui [ARGS...]      run the Vivado GUI; windows open on the Mac via XQuartz
   vivado-mac tcl [CMD...]       send Tcl to the running GUI session (no CMD: a prompt)
+      --list | --project NAME | --port N   several GUIs open: list them / pick one
   vivado-mac projects           list Vivado projects (.xpr) in the work dir
   vivado-mac gui-setup [--yes]  one-time GUI prep: XQuartz on the Mac (via Homebrew),
                           X11 forwarding packages in the guest, display test
@@ -559,7 +560,6 @@ func cmdProjects() {
 
 // MARK: - Tcl bridge into the running GUI
 
-let tclBridgePort = 8234
 let tclBridgeGuestPath = "/work/.vivado-mac/tclserver.tcl"
 
 /// Write the bridge server script into the shared work dir (visible to the
@@ -577,25 +577,63 @@ func writeTclBridge(_ cfg: Config) -> Bool {
     }
 }
 
-func cmdTcl(_ args: [String]) {
+/// Live bridges in the guest: (port, project name).
+func tclSessions(_ ip: String) -> [(port: Int, project: String)] {
+    let (_, out) = sshCapture(ip, "echo \(b64(Assets.tclBridgeDiscover)) | base64 -d | bash")
+    return out.split(separator: "\n").compactMap { line in
+        let f = line.split(separator: "\t", maxSplits: 1).map(String.init)
+        guard f.count == 2, let port = Int(f[0]) else { return nil }
+        return (port, f[1])
+    }
+}
+
+func cmdTcl(_ argsIn: [String]) {
+    let (flags, args) = parseFlags(argsIn, valueFlags: ["--project", "--port"])
     let cfg = loadConfigOrDie()
     let ip = ensureRunning(cfg)
     writeTclBridge(cfg)
-    // install the guest-side client once per invocation
+
+    let sessions = tclSessions(ip)
+    if flags["--list"] != nil {
+        if sessions.isEmpty { print("no running Vivado with a Tcl bridge (start one with `vivado-mac gui`)") }
+        for s in sessions { print("port \(s.port)  \(s.project)") }
+        return
+    }
+    let chosen: (port: Int, project: String)
+    if let p = flags["--port"].flatMap(Int.init) {
+        guard let s = sessions.first(where: { $0.port == p }) else { die("no Tcl bridge on port \(p) (vivado-mac tcl --list)") }
+        chosen = s
+    } else if let name = flags["--project"] {
+        let hits = sessions.filter { $0.project == name }
+        guard hits.count == 1 else {
+            die(hits.isEmpty ? "no running Vivado has project '\(name)' open (vivado-mac tcl --list)"
+                             : "\(hits.count) sessions have '\(name)' open — pick one with --port")
+        }
+        chosen = hits[0]
+    } else if sessions.count == 1 {
+        chosen = sessions[0]
+    } else if sessions.isEmpty {
+        die("no running Vivado with a Tcl bridge. Start one with `vivado-mac gui`, or in an open GUI's Tcl Console run: source \(tclBridgeGuestPath)")
+    } else {
+        print("several Vivado sessions are open — pick one:")
+        for s in sessions { print("  vivado-mac tcl --project \(s.project)      (port \(s.port))") }
+        exit(1)
+    }
+
     guard sshExec(ip, "echo \(b64(Assets.tclBridgeClient)) | base64 -d > /tmp/vmtcl.sh") == 0 else {
         die("could not reach the guest")
     }
     func send(_ line: String) -> Int32 {
-        sshExec(ip, "bash /tmp/vmtcl.sh \(tclBridgePort) \(shellQuote(line))")
+        sshExec(ip, "bash /tmp/vmtcl.sh \(chosen.port) \(shellQuote(line))")
     }
     if !args.isEmpty { exit(send(args.joined(separator: " "))) }
 
     // Interactive: the prompt runs here on the Mac; each line is one ssh round
     // trip into the bridge (a few hundred ms). Ctrl-D leaves; Vivado stays up.
-    let hello = send(#"if {[catch {current_project} p]} {set p "(none open)"}; return "connected: Vivado [version -short], project $p — Ctrl-D to leave""#)
-    guard hello == 0 else { exit(hello) }
+    print("connected: \(chosen.project) (port \(chosen.port)) — exit or Ctrl-D leaves the prompt, Vivado stays up")
+    let prompt = "\(chosen.project)% "
     while true {
-        print("vivado% ", terminator: "")
+        print(prompt, terminator: "")
         fflush(stdout)
         guard let line = readLine() else { print(""); break }
         let t = line.trimmingCharacters(in: .whitespaces)
