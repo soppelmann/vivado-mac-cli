@@ -77,7 +77,8 @@ BASIC covers, per [AMD's tier table](https://www.amd.com/en/products/software/ad
 
 ```bash
 vivado-mac vivado -mode batch -source build.tcl   # cwd is /work (= ~/vivado-work)
-vivado-mac vivado -mode tcl                       # interactive Tcl
+vivado-mac cli                                    # headless Vivado Tcl prompt (no window)
+vivado-mac vivado [ARGS]                          # same passthrough; defaults to -mode tcl, the IDE is `gui`
 vivado-mac run make -j8                           # any guest command (argv form)
 vivado-mac run 'ls *.bit && df -h /'              # single arg = shell string
 vivado-mac shell                                  # SSH into the guest

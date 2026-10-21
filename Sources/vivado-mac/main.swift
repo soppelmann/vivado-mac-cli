@@ -19,8 +19,9 @@ USAGE:
                           apply the post-install fixes
              --post-only  only (re)apply the Rosetta fixes and wrappers to an
                           existing /opt/Xilinx (e.g. after installing via the GUI)
-  vivado-mac vivado [ARGS...]   run vivado headless in the guest: -mode tcl for a prompt,
-                                -mode batch -source x.tcl for a script
+  vivado-mac cli [ARGS...]      headless Vivado Tcl prompt (= vivado -mode tcl), no window
+  vivado-mac vivado [ARGS...]   run vivado headless in the guest; without -mode this is
+                                the Tcl prompt, e.g. -mode batch -source x.tcl for a script
   vivado-mac gui [ARGS...]      run the Vivado GUI; windows open on the Mac via XQuartz
   vivado-mac tcl [CMD...]       type Tcl into an already-open GUI session (no CMD: a prompt)
       --list | --project NAME | --port N   several GUIs open: list them / pick one
@@ -442,9 +443,14 @@ func postInstall(_ ip: String, _ cfg: Config) {
 
 // MARK: - passthrough commands
 
-func cmdVivado(_ args: [String]) {
+/// Headless passthrough. Vivado's default mode is the GUI, which has no
+/// DISPLAY here and aborts; so without an explicit -mode this is Tcl mode.
+/// The IDE is `vivado-mac gui`.
+func cmdVivado(_ argsIn: [String]) {
     let cfg = loadConfigOrDie()
     let ip = ensureRunning(cfg)
+    var args = argsIn
+    if !args.contains("-mode") { args = ["-mode", "tcl"] + args }
     let quoted = args.map(shellQuote).joined(separator: " ")
     exit(sshExec(ip, "cd /work && vivado \(quoted)", tty: stdinIsTTY))
 }
@@ -828,6 +834,7 @@ do {
     case "setup": try cmdSetup(Array(argv.dropFirst()))
     case "install": try cmdInstall(Array(argv.dropFirst()))
     case "vivado": cmdVivado(Array(argv.dropFirst()))
+    case "cli": cmdVivado(["-mode", "tcl"] + Array(argv.dropFirst()))
     case "run": cmdRun(Array(argv.dropFirst()))
     case "shell": cmdShell(Array(argv.dropFirst()))
     case "gui": cmdGUI(Array(argv.dropFirst()))

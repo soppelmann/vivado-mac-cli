@@ -69,7 +69,8 @@ AMD アカウントでのトークン認証(対話)→ エディション選択(
 ```bash
 vivado-mac vivado -version
 vivado-mac vivado -mode batch -source build.tcl    # ~/vivado-work がカレント
-vivado-mac vivado -mode tcl                        # 対話 Tcl
+vivado-mac cli                                     # headless の Vivado Tcl プロンプト(ウィンドウ無し)
+vivado-mac vivado [ARGS]                           # 同じ passthrough。-mode 省略時は tcl(IDE は `gui`)
 vivado-mac run make                                # ゲストで任意コマンド(複数引数 = argv)
 vivado-mac run 'df -h / && free -h'                # 単一引数 = シェル文字列として解釈
 vivado-mac shell                                   # ゲストにログイン
