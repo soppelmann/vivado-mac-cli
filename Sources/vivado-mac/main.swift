@@ -14,6 +14,8 @@ USAGE:
   vivado-mac install [PATH/TO/FPGAs_..._Lin64.bin] [--config FILE] [--accept-eulas]
                           install Vivado into the VM (batch mode); without a
                           path, finds the installer in ~/Downloads or the work dir
+             --post-only  only (re)apply the Rosetta fixes and wrappers to an
+                          existing /opt/Xilinx (e.g. after installing via the GUI)
   vivado-mac vivado [ARGS...]   run vivado in the guest (e.g. -mode batch -source x.tcl)
   vivado-mac gui [ARGS...]      run the Vivado GUI; windows open on the Mac via XQuartz
   vivado-mac gui-setup [--yes]  one-time GUI prep: XQuartz on the Mac (via Homebrew),
@@ -267,6 +269,15 @@ func cmdInstall(_ args: [String]) throws {
     let (flags, positional) = parseFlags(args, valueFlags: ["--config"])
     let cfg = loadConfigOrDie()
     let fm = FileManager.default
+    if flags["--post-only"] != nil {
+        let ip = ensureRunning(cfg)
+        let (_, viv) = sshCapture(ip, "ls -d /opt/Xilinx/*/Vivado /opt/Xilinx/Vivado/* 2>/dev/null | head -1")
+        guard !viv.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            die("no Vivado under /opt/Xilinx in the guest — nothing to post-process")
+        }
+        postInstall(ip, cfg)
+        return
+    }
     let installerSrc: URL
     if let installerArg = positional.first {
         installerSrc = URL(fileURLWithPath: (installerArg as NSString).expandingTildeInPath)
@@ -353,6 +364,14 @@ func cmdInstall(_ args: [String]) throws {
         die("xsetup Install failed — rerun `vivado-mac install` to resume/retry")
     }
 
+    postInstall(ip, cfg)
+}
+
+/// Everything that turns a bare /opt/Xilinx into a working install under
+/// Rosetta: AMD's installLibs, udev stubs, lscpu shim, wrapper, profile.
+/// Idempotent; also reachable as `vivado-mac install --post-only` for an
+/// install done through the GUI installer.
+func postInstall(_ ip: String, _ cfg: Config) {
     note("post-install: OS libs, Rosetta workarounds, wrappers …")
     _ = sshExec(ip, "echo \(b64(Assets.postInstallScript)) | base64 -d | bash")
     _ = sshExec(ip, "dpkg-divert --list /usr/bin/lscpu | grep -q lscpu || " +
