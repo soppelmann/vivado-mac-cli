@@ -764,7 +764,7 @@ enum Assets {
     #!/bin/bash
     port=$1; shift
     send() {
-      if ! exec 3<>/dev/tcp/127.0.0.1/$port 2>/dev/null; then
+      if ! { exec 3<>/dev/tcp/127.0.0.1/$port; } 2>/dev/null; then
         echo "no Tcl bridge on port $port. Start Vivado with 'vivado-mac gui' (loads it automatically)," >&2
         echo "or in the GUI's Tcl Console run:  source /work/.vivado-mac/tclserver.tcl" >&2
         return 2
