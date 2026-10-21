@@ -124,7 +124,7 @@ Virtualization.framework has no USB passthrough, so the cable is shared from the
 - Don't unplug the cable or restart usbipd mid-programming: a Platform Cable left mid-transaction stops answering until it is physically re-plugged.
 - **Status: implemented, not yet verified on hardware here** (2026-10). tae2yi verified the same chain (usbipd-mac + patch → vhci-hcd → hw_server under Rosetta) with a Platform Cable USB II on Vivado 2026.1; FTDI/Digilent cables are handled by vendor ID but nobody has run them through it yet. `vivado-mac destroy` removes the usbipd-mac build along with the VM (it rebuilds on the next `jtag attach`).
 
-**Use in-process Tcl, not `launch_runs`** — child-process spawning is the one flaky path under Rosetta:
+**`launch_runs` works on 2026.1.** The child-process path (project-mode runs, the GUI's Run Synthesis / Run Implementation) was the known-flaky one under Rosetta in 2025.x, where the libudev `LD_PRELOAD` never reached the children; 2026.1 needs no preload, and a full project-mode `launch_runs impl_1 -to_step write_bitstream` (block design with the Zynq UltraScale+ PS, out-of-context IP runs, synthesis, implementation, `-bin_file`) completed cleanly here in 5½ min for a ZU2EG. In-process Tcl remains the lean option for scripted builds:
 
 ```tcl
 read_verilog /work/proj/top.v

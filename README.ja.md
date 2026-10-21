@@ -144,8 +144,8 @@ Vivado 2026.1 の **synth → opt → place → route → write_bitstream フル
 
 ## Rosetta 下の残る注意点(ユーザー側)
 
-- **`launch_runs` は避ける**: 子プロセス spawn 経路が壊れやすい。in-process Tcl
-  (`synth_design` → `opt_design` → `place_design` → `route_design` → `write_bitstream`)を使う
+- **`launch_runs` は 2026.1 では動作確認済み**(ブロックデザイン + Zynq UltraScale+ PS、OOC IP ラン、合成〜`-bin_file` まで 5.5 分、ZU2EG)。2025.x で壊れやすかったのは libudev の `LD_PRELOAD` が子プロセスに届かなかったためで、2026.1 は preload 自体が不要。スクリプト用途には in-process Tcl
+  (`synth_design` → `opt_design` → `place_design` → `route_design` → `write_bitstream`)が軽量
 - Vivado が `realloc(): invalid pointer` で落ちたら(2026.1 では未再現):
   `export LD_PRELOAD=/opt/Xilinx/udev_stub_x86_64.so` を試す
 - `xsdb` 等の他ツールは `vivado-mac shell` 内で `source /opt/Xilinx/*/Vivado/settings64.sh`
