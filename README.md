@@ -1,6 +1,6 @@
 # vivado-mac-cli
 
-Run AMD **Vivado 2026.1 natively-ish on Apple Silicon Macs** — headless (CLI only), no Docker, no Lima, no XQuartz. [日本語 README](README.ja.md)
+Run AMD **Vivado 2026.1 natively-ish on Apple Silicon Macs** — headless (CLI) by default, with an optional native-window GUI through XQuartz. No Docker, no Lima. [日本語 README](README.ja.md)
 
 A zero-dependency Swift CLI (`vivado-mac`) drives Apple's **Virtualization.framework** directly: it boots an Ubuntu 24.04 ARM64 VM, injects **Rosetta 2** into it, and runs the x86-64 Linux Vivado at near-native speed over SSH.
 
@@ -8,6 +8,7 @@ A zero-dependency Swift CLI (`vivado-mac`) drives Apple's **Virtualization.frame
 
 ```
 Mac (Apple Silicon)
+├─ XQuartz (optional, via Homebrew) ⇐ ssh -Y: Vivado's GUI windows land on the Mac desktop
 └─ vivado-mac (Swift CLI, zero deps, ad-hoc signed)
    └─ Virtualization.framework VM: Ubuntu 24.04 ARM64
       ├─ Rosetta 2 (VZLinuxRosettaDirectoryShare + binfmt_misc) ← x86-64 AOT translation
@@ -31,8 +32,8 @@ Honest caveats: Rosetta 2 is guaranteed only through macOS 27 (per WWDC 2025), t
 ## Requirements
 
 - Apple Silicon Mac, macOS 13+ (macOS 15+ recommended — Rosetta 2 gained AVX2 there)
-- Xcode Command Line Tools (`swift`). No Homebrew, no Docker
-- ~120 GB free disk (7-series device set), 16 GB+ RAM recommended
+- Xcode Command Line Tools (`swift`). No Docker. Homebrew only if you want the GUI (it installs XQuartz)
+- ~120 GB free disk for the 7-series device set; each extra family (e.g. Zynq UltraScale+ MPSoC) adds ~10–20 GB. The VM disk is a **sparse** file: the Mac only pays for blocks the guest has actually written, never for the free space inside the VM (`vivado-mac status` shows real usage next to the ceiling). 16 GB+ RAM recommended
 - An AMD account (for the installer download and the free license)
 
 ## Install
@@ -55,13 +56,15 @@ Interactive AMD token auth → edition pick (choose Vivado) → EULA confirm →
 
 ## Licensing (changed in 2026.1)
 
-Vivado 2026.1 requires a license even for basic use. The free **BASIC tier** (all 7-series devices) is node-locked to a MAC address — and `vivado-mac` pins the VM's MAC permanently, so:
+Vivado 2026.1 requires a license even for basic use. The free **BASIC tier** is node-locked to a MAC address — and `vivado-mac` pins the VM's MAC permanently, so:
 
 1. `vivado-mac status` → note the VM MAC
 2. Generate a free BASIC license at https://www.xilinx.com/getlicense for that MAC
 3. Save it as `~/vivado-work/Xilinx.lic` — done (`XILINXD_LICENSE_FILE` is pre-wired)
 
 `vivado-mac destroy` regenerates the MAC → you'd need to re-host the license (AMD allows once a year). Don't destroy casually.
+
+BASIC covers, per [AMD's tier table](https://www.amd.com/en/products/software/adaptive-socs-and-fpgas/vivado/vivado-licensing-options.html): all 7-series, Spartan/Artix UltraScale+, Kintex UltraScale+ KU3P/KU5P, and **Zynq UltraScale+ MPSoC ZU1–ZU7** (CG/EG) — so a ZU2EG board is in. Tick the matching device families during `vivado-mac install` (ConfigGen); families can't be removed afterwards. BASIC excludes ILA/debug cores and IBERT, and the license must be renewed (free) every 12 months. If your `.lic` mixes tiers (e.g. BASIC + an Alveo entitlement), Vivado takes the first tier it finds — keep only the BASIC lines in `Xilinx.lic`.
 
 ## Usage
 
@@ -73,6 +76,24 @@ vivado-mac run 'ls *.bit && df -h /'              # single arg = shell string
 vivado-mac shell                                  # SSH into the guest
 vivado-mac start / stop / status / doctor / version
 ```
+
+### GUI (optional, through XQuartz)
+
+```bash
+vivado-mac gui-setup          # once: XQuartz via Homebrew, guest xauth/fonts, display test
+vivado-mac gui                # Vivado GUI — every window is a native XQuartz window on the Mac
+vivado-mac gui proj/top.xpr   # open a project (paths relative to ~/vivado-work)
+vivado-mac run --x11 CMD      # any other X11 program in the guest
+vivado-mac shell --x11        # shell with the display forwarded
+```
+
+This is plain **`ssh -Y` X11 forwarding** into the same headless VM — Vivado's Java/Swing GUI speaks X11, XQuartz is the X server. No VNC, no desktop environment, no virtual graphics device; the VM is byte-identical to the headless one apart from four small arm64 packages (`xauth`, fonts, `xdpyinfo`). A GUI session holds the activity lock, so idle auto-shutdown never fires while Vivado is open.
+
+- **XQuartz ≥ 2.8.6 is required.** Older builds crash `xauth` on macOS 27 ([XQuartz#520](https://github.com/XQuartz/XQuartz/issues/520)) — exactly the step ssh runs for forwarding — and the 2.8.7 betas crash on 27.0.1 ([#524](https://github.com/XQuartz/XQuartz/issues/524)). `gui-setup` installs through `brew install --cask xquartz` (currently exactly 2.8.6); if a manually installed XQuartz is in the way it prints the [official uninstall steps](https://www.xquartz.org/FAQs.html). Without Homebrew it downloads the signed pkg and verifies its SHA-256.
+- After a first-time XQuartz install, log out and back in once (launchd sets `DISPLAY` at login). `vivado-mac` finds the display socket without it, other X11 tools won't.
+- **Run Synthesis / Implementation from the GUI uses `launch_runs`** (see below) — the one path known to be flaky under Rosetta. If a run dies, drive the build from in-process Tcl and use the GUI for everything else (project setup, IP integrator, schematic/device views, hardware manager, reports).
+- Known quirks: a window that stays black → resize it once (XQuartz redraw); macOS 27 Mission Control can't minimize X11 windows ([#519](https://github.com/XQuartz/XQuartz/issues/519), Apple bug); Java2D over a forwarded display is slower than native — the wrapper already sets `-Dsun.java2d.pmoffscreen=false`, and `J2D_USE_MITSHM=false` / `_JAVA_AWT_WM_NONREPARENTING=1` are documented opt-ins in `/usr/local/bin/vivado`.
+- **Status: implemented, not yet verified on hardware** (2026-10). The headless flow is unaffected either way.
 
 **Use in-process Tcl, not `launch_runs`** — child-process spawning is the one flaky path under Rosetta:
 
@@ -102,7 +123,7 @@ Everything below was hit, root-caused, and fixed live on real hardware. The tool
 
 ## Limitations
 
-- Headless only — no GUI (that's the point; see [ichi4096/vivado-on-silicon-mac](https://github.com/ichi4096/vivado-on-silicon-mac) for a Docker+VNC approach)
+- The GUI is X11-forwarded Java Swing, not a local desktop: slower than native, Mission Control quirks on macOS 27, and unverified on 2026.1 so far (see [GUI](#gui-optional-through-xquartz)). For a full Linux desktop over VNC see [ichi4096/vivado-on-silicon-mac](https://github.com/ichi4096/vivado-on-silicon-mac)
 - No USB JTAG passthrough. Bitstreams land in `~/vivado-work`; flash with [openFPGALoader](https://github.com/trabucayre/openFPGALoader) (native on macOS) or XVC
 - Rosetta speed is roughly 70–80 % of native x86; big UltraScale+ builds belong on a real x86 box
 - Apple guarantees Rosetta 2 through macOS 27 (WWDC 2025); macOS 28 is a question mark
@@ -111,3 +132,4 @@ Everything below was hit, root-caused, and fixed live on real hardware. The tool
 
 - [ichi4096/vivado-on-silicon-mac](https://github.com/ichi4096/vivado-on-silicon-mac) and the [minorin22 fork](https://github.com/minorin22/vivado-on-silicon-mac) — the Docker + VNC pioneers
 - [filmil/vivado-docker](https://github.com/filmil/vivado-docker) — the udev-stub and in-process-Tcl workarounds for 2025.x
+- [andrivet/vivado-on-silicon-mac-x11](https://github.com/andrivet/vivado-on-silicon-mac-x11) — first to put Vivado's GUI on the Mac desktop through XQuartz (Docker + direct TCP; we use ssh -Y instead)

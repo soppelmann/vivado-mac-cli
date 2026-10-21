@@ -117,16 +117,27 @@ private func sshBaseArgs(ip: String) -> [String] {
     ]
 }
 
+/// Trusted X11 forwarding into the guest (`vivado-mac gui`). Trusted (-Y), not
+/// -X: untrusted forwarding runs clients under the X SECURITY extension, which
+/// breaks Java AWT and GTK. XAuthLocation is pinned to XQuartz's xauth instead
+/// of relying on Apple's /usr/X11R6 selector symlink. DISPLAY must be in our
+/// environment before spawning (see XQuartz.resolveDisplay / requireHostX11).
+let x11ForwardArgs = ["-Y", "-o", "XAuthLocation=\(XQuartz.xauthPath)"]
+
 /// Run `cmd` in the guest through a login shell (so /etc/profile.d is sourced).
 /// tty:true allocates a pty and spawns in our own process group so the user
 /// can type into prompts (AuthTokenGen, ConfigGen, vivado -mode tcl, …).
+/// x11:true forwards the Mac's XQuartz display into the session; such sessions
+/// are long-lived and must see the terminal's Ctrl-C, so they always spawn in
+/// our process group like tty sessions do.
 @discardableResult
-func sshExec(_ ip: String, _ cmd: String, tty: Bool = false) -> Int32 {
+func sshExec(_ ip: String, _ cmd: String, tty: Bool = false, x11: Bool = false) -> Int32 {
     var args = ["-o", "ConnectTimeout=10"]
     if tty { args.append("-t") }
+    if x11 { args += x11ForwardArgs }
     args += sshBaseArgs(ip: ip)
     args += ["--", "bash", "-lc", shellQuote(cmd)]
-    return tty ? runInteractive("/usr/bin/ssh", args) : run("/usr/bin/ssh", args)
+    return (tty || x11) ? runInteractive("/usr/bin/ssh", args) : run("/usr/bin/ssh", args)
 }
 
 func sshCapture(_ ip: String, _ cmd: String) -> (status: Int32, output: String) {
@@ -143,9 +154,9 @@ func sshReachable(_ ip: String) -> Bool {
     return run("/usr/bin/ssh", args, quiet: true) == 0
 }
 
-/// Interactive login shell.
-func sshInteractive(_ ip: String) -> Int32 {
-    runInteractive("/usr/bin/ssh", ["-t"] + sshBaseArgs(ip: ip))
+/// Interactive login shell (optionally with the XQuartz display forwarded).
+func sshInteractive(_ ip: String, x11: Bool = false) -> Int32 {
+    runInteractive("/usr/bin/ssh", ["-t"] + (x11 ? x11ForwardArgs : []) + sshBaseArgs(ip: ip))
 }
 
 // MARK: - Guest IP discovery (macOS DHCP leases for VZNATNetworkDeviceAttachment)
@@ -200,6 +211,14 @@ func discoverIP(mac: String) -> String? {
 func fileSize(_ url: URL) -> UInt64 {
     let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
     return (attrs?[.size] as? UInt64) ?? 0
+}
+
+/// Bytes actually allocated on the Mac's disk. disk.img is a sparse file, so
+/// this is far below its apparent size until the guest has written that much.
+func allocatedSize(_ url: URL) -> UInt64 {
+    var st = stat()
+    guard stat(url.path, &st) == 0 else { return 0 }
+    return UInt64(max(0, st.st_blocks)) * 512
 }
 
 /// True while a __vmhost process holds the exclusive lock. The kernel releases
@@ -314,6 +333,7 @@ enum Assets {
           apt-get update
           apt-get install -y --no-install-recommends \
             locales unzip file ca-certificates xvfb \
+            \#(guiPackages) \
             gcc-x86-64-linux-gnu:arm64 libc6-dev-amd64-cross \
             libc6:amd64 libgcc-s1:amd64 libstdc++6:amd64 zlib1g:amd64 \
             libudev1:amd64 libtinfo6:amd64 libncurses6:amd64 libexpat1:amd64 \
@@ -542,6 +562,33 @@ enum Assets {
     EOT
     """
 
+    /// Guest packages for the GUI path (SSH X11 forwarding). All arm64 / arch-
+    /// independent: `xauth` is what sshd needs to accept X11 forwarding at all
+    /// (the cloud image lacks it, and sshd skips forwarding silently without it);
+    /// fonts because Java AWT aborts font enumeration on a font-less system;
+    /// `x11-utils` only for the xdpyinfo display test. The amd64 X client
+    /// libraries Vivado itself links against are already in vivado-provision.sh.
+    static let guiPackages = "xauth x11-utils fonts-dejavu-core fontconfig"
+
+    /// Idempotent GUI provisioning for VMs created before GUI support existed
+    /// (cloud-init runs only on first boot, so user-data changes never reach an
+    /// existing disk). Prints GUI_PROVISION_OK on success, SSHD_X11_OFF if the
+    /// guest sshd has X11Forwarding disabled (Ubuntu's default is yes).
+    static var guiProvisionScript: String { """
+    #!/bin/bash
+    set -e
+    missing=$(for p in \(guiPackages); do dpkg -s "$p" >/dev/null 2>&1 || echo "$p"; done)
+    if [ -n "$missing" ]; then
+      echo "installing: $(echo $missing)"
+      if ! { sudo apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive \
+             apt-get install -y -q --no-install-recommends $missing; } >/tmp/gui-apt.log 2>&1; then
+        tail -20 /tmp/gui-apt.log; echo GUI_PROVISION_FAIL; exit 1
+      fi
+    fi
+    sudo sshd -T 2>/dev/null | grep -qi '^x11forwarding yes' || echo SSHD_X11_OFF
+    command -v xauth >/dev/null && echo GUI_PROVISION_OK
+    """ }
+
     /// Guest-side /usr/local/bin/vivado wrapper.
     static let vivadoWrapper = """
     #!/bin/bash
@@ -556,6 +603,14 @@ enum Assets {
     # flow verified clean without it under Rosetta. If Vivado ever dies with
     # "realloc(): invalid pointer" (libudev under Rosetta), re-enable with:
     #   export LD_PRELOAD=/opt/Xilinx/udev_stub_x86_64.so
+    if [ -n "$DISPLAY" ]; then
+      # GUI over a forwarded X connection (vivado-mac gui). Java2D's pixmap
+      # offscreen path round-trips pixels through the X server and is the known
+      # slow path on non-local displays. Opt-in knobs if windows misbehave:
+      #   export J2D_USE_MITSHM=false            # X errors mentioning shm / BadAccess
+      #   export _JAVA_AWT_WM_NONREPARENTING=1   # grey or never-focused windows
+      export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-Dsun.java2d.pmoffscreen=false"
+    fi
     export XILINXD_LICENSE_FILE=${XILINXD_LICENSE_FILE:-/work/Xilinx.lic}
     exec "$bin" "$@"
     """

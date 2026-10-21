@@ -1,9 +1,10 @@
 import Foundation
 
-let version = "0.1.0"
+let version = "0.2.0"
 
 let usage = """
-vivado-mac — AMD Vivado on Apple Silicon, headless (Virtualization.framework + Rosetta 2)
+vivado-mac — AMD Vivado on Apple Silicon (Virtualization.framework + Rosetta 2),
+             headless by default, optional GUI through XQuartz
 
 USAGE:
   vivado-mac setup [--cpus N] [--memory GiB] [--disk GiB] [--work PATH] [--idle MIN]
@@ -14,8 +15,11 @@ USAGE:
                           install Vivado into the VM (batch mode); without a
                           path, finds the installer in ~/Downloads or the work dir
   vivado-mac vivado [ARGS...]   run vivado in the guest (e.g. -mode batch -source x.tcl)
-  vivado-mac run CMD [ARGS...]  run any command in the guest work dir
-  vivado-mac shell              interactive shell in the guest
+  vivado-mac gui [ARGS...]      run the Vivado GUI; windows open on the Mac via XQuartz
+  vivado-mac gui-setup [--yes]  one-time GUI prep: XQuartz on the Mac (via Homebrew),
+                          X11 forwarding packages in the guest, display test
+  vivado-mac run [--x11] CMD [ARGS...]  run any command in the guest work dir
+  vivado-mac shell [--x11]      interactive shell in the guest
   vivado-mac start | stop | status | doctor
   vivado-mac destroy            delete the VM and all state (work dir is kept)
 
@@ -321,7 +325,9 @@ func cmdInstall(_ args: [String]) throws {
     }
     let (_, cfgCheck) = sshCapture(ip, "test -f \(guestConfig) && echo yes")
     if !cfgCheck.contains("yes") {
-        note("generating install config (choose edition/devices; ConfigGen is interactive) …")
+        note("generating install config (ConfigGen is interactive): choose Vivado, then tick only the")
+        note("device families you need — e.g. '7 Series' and/or 'Zynq UltraScale+ MPSoC' (ZU2EG…ZU7EG are")
+        note("in the free BASIC tier). Each family adds ~10–20 GB to the download and the VM disk.")
         guard sshExec(ip, "PATH=/opt/vivado-shim:$PATH /work/.installer/xsetup -b ConfigGen", tty: true) == 0 else {
             die("ConfigGen failed")
         }
@@ -352,6 +358,10 @@ func cmdInstall(_ args: [String]) throws {
     _ = sshExec(ip, "echo \(b64(Assets.vivadoWrapper)) | base64 -d | sudo tee /usr/local/bin/vivado >/dev/null && " +
         "sudo chmod +x /usr/local/bin/vivado")
     _ = sshExec(ip, "echo \(b64(Assets.profileScript)) | base64 -d | sudo tee /etc/profile.d/vivado.sh >/dev/null")
+    // Return the installer's scratch space to the Mac: disk.img is sparse, and
+    // discards from the guest punch holes in it (see `vivado-mac status`).
+    note("trimming freed guest blocks …")
+    _ = sshExec(ip, "sudo fstrim -v / 2>/dev/null || true")
 
     print("""
 
@@ -364,6 +374,8 @@ func cmdInstall(_ args: [String]) throws {
 
     Try:  vivado-mac vivado -version
           vivado-mac vivado -mode batch -source build.tcl
+    GUI:  vivado-mac gui-setup   (once: XQuartz + guest X11 packages)
+          vivado-mac gui
     Note: under Rosetta, prefer in-process Tcl (synth_design, place_design, …)
           over launch_runs — child-process spawning is the known crash path.
     """)
@@ -378,19 +390,135 @@ func cmdVivado(_ args: [String]) {
     exit(sshExec(ip, "cd /work && vivado \(quoted)", tty: stdinIsTTY))
 }
 
-func cmdRun(_ args: [String]) {
-    guard !args.isEmpty else { die("usage: vivado-mac run CMD [ARGS...]") }
+func cmdRun(_ argsIn: [String]) {
+    var args = argsIn
+    let x11 = args.contains("--x11")
+    args.removeAll { $0 == "--x11" }
+    guard !args.isEmpty else { die("usage: vivado-mac run [--x11] CMD [ARGS...]") }
     let cfg = loadConfigOrDie()
+    if x11 { requireHostX11() }
     let ip = ensureRunning(cfg)
     // single arg = shell string (`run 'a && b'`), multiple = quoted argv (`run make -j8`)
     let cmd = args.count == 1 ? args[0] : args.map(shellQuote).joined(separator: " ")
-    exit(sshExec(ip, "cd /work && \(cmd)", tty: stdinIsTTY))
+    exit(sshExec(ip, "cd /work && \(cmd)", tty: stdinIsTTY, x11: x11))
 }
 
-func cmdShell() {
+func cmdShell(_ args: [String]) {
+    let x11 = args.contains("--x11")
     let cfg = loadConfigOrDie()
+    if x11 { requireHostX11() }
     let ip = ensureRunning(cfg)
-    exit(sshInteractive(ip))
+    exit(sshInteractive(ip, x11: x11))
+}
+
+// MARK: - GUI (XQuartz on the Mac + SSH X11 forwarding into the guest)
+
+/// Verify the Mac side of the GUI path and export DISPLAY for the ssh client.
+func requireHostX11() {
+    guard let v = XQuartz.installedVersion() else {
+        die("XQuartz is not installed — run `vivado-mac gui-setup`")
+    }
+    guard XQuartz.isAtLeast(v) else {
+        die("XQuartz \(v) is too old (need ≥ \(XQuartz.minimumVersion); older builds crash xauth on macOS 27) — run `vivado-mac gui-setup`")
+    }
+    guard XQuartz.xauthWorks() else {
+        die("\(XQuartz.xauthPath) crashes — reinstall XQuartz (`vivado-mac gui-setup`)")
+    }
+    guard let display = XQuartz.resolveDisplay() else {
+        die("no X11 DISPLAY — log out and back in once after installing XQuartz, then retry")
+    }
+    setenv("DISPLAY", display, 1)
+    XQuartz.ensureRunning()
+}
+
+/// Guest side: xauth present (sshd silently skips X11 forwarding without it)
+/// and sshd actually configured to forward.
+func guestX11State(_ ip: String) -> (xauth: Bool, sshd: Bool) {
+    let (_, out) = sshCapture(ip, "command -v xauth >/dev/null && echo XAUTH_OK; " +
+        "sudo sshd -T 2>/dev/null | grep -qi '^x11forwarding yes' && echo FWD_OK")
+    return (out.contains("XAUTH_OK"), out.contains("FWD_OK"))
+}
+
+func cmdGUI(_ args: [String]) {
+    let cfg = loadConfigOrDie()
+    requireHostX11()
+    let ip = ensureRunning(cfg)
+    let g = guestX11State(ip)
+    guard g.xauth, g.sshd else {
+        die("guest is not set up for X11 forwarding (xauth \(g.xauth ? "ok" : "missing"), sshd forwarding \(g.sshd ? "on" : "off")) — run `vivado-mac gui-setup`")
+    }
+    let quoted = args.map(shellQuote).joined(separator: " ")
+    note("starting the Vivado GUI — windows open on the Mac desktop via XQuartz (first start takes a while; Ctrl-C here closes it)")
+    exit(sshExec(ip, "cd /work && vivado \(quoted)", tty: stdinIsTTY, x11: true))
+}
+
+func cmdGUISetup(_ args: [String]) {
+    let (flags, _) = parseFlags(args, valueFlags: [])
+    let yes = flags["--yes"] != nil || flags["-y"] != nil
+
+    // 1. Mac: XQuartz (Homebrew cask preferred)
+    if let v = XQuartz.installedVersion(), XQuartz.isAtLeast(v), XQuartz.xauthWorks() {
+        note("XQuartz \(v) (\(XQuartz.installedViaBrew() ? "Homebrew" : "manual install")) ✓")
+    } else {
+        if let v = XQuartz.installedVersion() {
+            note("XQuartz \(v) is \(XQuartz.isAtLeast(v) ? "installed but xauth crashes" : "too old (need ≥ \(XQuartz.minimumVersion))")")
+        } else {
+            note("XQuartz is not installed")
+        }
+        guard XQuartz.install(assumeYes: yes) else {
+            die("XQuartz is not usable yet — follow the steps above, then rerun `vivado-mac gui-setup`")
+        }
+    }
+
+    // 2. Mac: DISPLAY
+    let display = XQuartz.resolveDisplay()
+    if let d = display {
+        note("DISPLAY: \(d)")
+        setenv("DISPLAY", d, 1)
+    } else {
+        note("DISPLAY not available yet — log out and back in, then rerun `vivado-mac gui-setup` for the display test")
+    }
+
+    // 3. Guest: xauth, fonts, sshd
+    guard let cfg = Config.load() else {
+        note("VM not set up yet — run `vivado-mac setup` and `vivado-mac install`, then `vivado-mac gui-setup` again to prepare the guest")
+        return
+    }
+    let ip = ensureRunning(cfg)
+    note("guest: X11 forwarding packages (\(Assets.guiPackages)) …")
+    let (_, out) = sshCapture(ip, "echo \(b64(Assets.guiProvisionScript)) | base64 -d | bash")
+    guard out.contains("GUI_PROVISION_OK") else {
+        die("guest provisioning failed:\n\(out)")
+    }
+    if out.contains("SSHD_X11_OFF") {
+        note("guest sshd has X11Forwarding off — enabling …")
+        _ = sshExec(ip, "printf 'X11Forwarding yes\\nX11UseLocalhost yes\\n' | " +
+            "sudo tee /etc/ssh/sshd_config.d/10-vivado-mac-x11.conf >/dev/null && sudo systemctl reload ssh")
+    }
+    let g = guestX11State(ip)
+    guard g.xauth, g.sshd else { die("guest X11 state still wrong (xauth \(g.xauth), sshd \(g.sshd))") }
+    note("guest: xauth ✓, sshd X11Forwarding ✓")
+
+    // 4. End-to-end: an X client in the guest talks to XQuartz through the tunnel
+    guard display != nil else { return }
+    XQuartz.ensureRunning()
+    note("display test: forwarding an X connection to XQuartz (it may appear in the Dock) …")
+    let rc = sshExec(ip, "xdpyinfo >/tmp/xdpy.txt 2>&1; rc=$?; head -3 /tmp/xdpy.txt; exit $rc", x11: true)
+    guard rc == 0 else {
+        die("X11 forwarding test failed — is XQuartz running (`open -a XQuartz`)? Then rerun `vivado-mac gui-setup`")
+    }
+    print("""
+
+    ✅ GUI ready.
+       vivado-mac gui                  Vivado main window on the Mac desktop
+       vivado-mac gui proj/top.xpr     open a project (paths relative to \(cfg.workDir))
+       vivado-mac run --x11 CMD        any other X11 program in the guest
+
+    Notes: 'Run Synthesis / Implementation' in the GUI uses launch_runs (child
+           processes) — the one path known to be flaky under Rosetta. If a run
+           dies, build with in-process Tcl: vivado-mac vivado -mode batch -source build.tcl
+           A window that stays black: resize it once (XQuartz redraw quirk).
+    """)
 }
 
 // MARK: - lifecycle
@@ -435,6 +563,11 @@ func cmdStatus() {
     print("config:   \(cfg.cpus) CPUs, \(cfg.memoryGiB) GiB RAM, \(cfg.diskGiB) GiB disk, \(idle)")
     print("work dir: \(cfg.workDir)")
     print("VM MAC:   \(cfg.macAddress)")
+    if FileManager.default.fileExists(atPath: Paths.diskImage.path) {
+        let usedGiB = Double(allocatedSize(Paths.diskImage)) / Double(1 << 30)
+        print(String(format: "disk.img: %.1f GiB used on the Mac (sparse file; %d GiB ceiling)", usedGiB, cfg.diskGiB))
+    }
+    print("GUI:      \(XQuartz.summary())")
     guard let pid = vmPID() else {
         print("VM:       stopped")
         return
@@ -465,11 +598,14 @@ func cmdDoctor() {
     print("  Rosetta:  \(RosettaState.current() == .installed ? "installed ✓" : "NOT installed ✗")")
     let fm = FileManager.default
     print("  disk.img: \(fm.fileExists(atPath: Paths.diskImage.path) ? "present ✓" : "missing ✗")")
+    print("  GUI:      \(XQuartz.summary())")
     cmdStatus()
     if let cfg = Config.load(), vmPID() != nil,
        let ip = discoverIP(mac: cfg.macAddress) {
         let (_, out) = sshCapture(ip, rosettaSmokeTest)
         print("guest x86-64 exec: \(out.contains("ROSETTA_OK") ? "OK ✓" : "FAIL ✗ (\(out.trimmingCharacters(in: .whitespacesAndNewlines)))")")
+        let g = guestX11State(ip)
+        print("guest X11 fwd:     xauth \(g.xauth ? "✓" : "✗ (gui-setup)"), sshd X11Forwarding \(g.sshd ? "✓" : "✗")")
     }
 }
 
@@ -495,7 +631,9 @@ do {
     case "install": try cmdInstall(Array(argv.dropFirst()))
     case "vivado": cmdVivado(Array(argv.dropFirst()))
     case "run": cmdRun(Array(argv.dropFirst()))
-    case "shell": cmdShell()
+    case "shell": cmdShell(Array(argv.dropFirst()))
+    case "gui": cmdGUI(Array(argv.dropFirst()))
+    case "gui-setup": cmdGUISetup(Array(argv.dropFirst()))
     case "start": cmdStart()
     case "stop": cmdStop()
     case "status": cmdStatus()

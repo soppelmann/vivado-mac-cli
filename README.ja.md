@@ -1,12 +1,13 @@
 # vivado-mac-cli
 
-AMD Vivado 2026.1 を Apple Silicon Mac 上で **headless(CLI のみ)** で動かすツール。コマンド名は `vivado-mac`。[English README](README.md)
+AMD Vivado 2026.1 を Apple Silicon Mac 上で **headless(CLI)** で動かすツール。オプションで XQuartz 経由の GUI も使える。コマンド名は `vivado-mac`。[English README](README.md)
 
-Docker / Lima / XQuartz は使わない。Apple 純正 **Virtualization.framework** を Swift から直接叩き、
+Docker / Lima は使わない。Apple 純正 **Virtualization.framework** を Swift から直接叩き、
 Ubuntu 24.04 (ARM64) VM に **Rosetta 2** を注入して x86-64 Linux 版 Vivado をほぼネイティブ速度で実行する。
 
 ```
 Mac (Apple Silicon)
+├─ XQuartz(任意、Homebrew で導入)⇐ ssh -Y で Vivado GUI のウィンドウが Mac デスクトップに出る
 └─ vivado-mac (Swift CLI, 依存ゼロ, ad-hoc署名のみ)
    └─ Virtualization.framework VM: Ubuntu 24.04 ARM64
       ├─ Rosetta 2 (VZLinuxRosettaDirectoryShare + binfmt_misc) ← x86-64 AOT変換
@@ -28,8 +29,8 @@ Apple Silicon で Vivado を動かす先行例([ichi4096](https://github.com/ich
 ## 必要なもの
 
 - Apple Silicon Mac、macOS 13+(macOS 15+ 推奨: Rosetta 2 の AVX2 対応)
-- Xcode Command Line Tools(`swift`)のみ。Homebrew も Docker も不要
-- ディスク空き ~120 GB(Vivado standard 構成)
+- Xcode Command Line Tools(`swift`)のみ。Docker 不要。GUI を使う場合のみ Homebrew(XQuartz 導入用)
+- ディスク空き ~120 GB(7-series 構成。Zynq UltraScale+ MPSoC 等を追加すると各 10〜20 GB 増)。VM ディスクは**スパースファイル**で、Mac 側はゲストが実際に書いた分しか消費しない(VM 内の空き容量は Mac の容量を食わない)。実使用量は `vivado-mac status` に表示
 - AMD アカウント(インストーラのダウンロードとライセンス取得に必要)
 
 ## セットアップ
@@ -55,7 +56,7 @@ AMD アカウントでのトークン認証(対話)→ エディション選択(
 
 ## ライセンス(2026.1 の重要な変更)
 
-2026.1 からライセンス必須(無償の **BASIC** tier あり: 7-series 全デバイス等、年次更新)。
+2026.1 からライセンス必須(無償の **BASIC** tier あり、年次更新)。BASIC の対象は [AMD の tier 表](https://www.amd.com/en/products/software/adaptive-socs-and-fpgas/vivado/vivado-licensing-options.html)によれば 7-series 全デバイス、Spartan/Artix UltraScale+、Kintex UltraScale+ KU3P/KU5P、**Zynq UltraScale+ MPSoC ZU1〜ZU7**(CG/EG)。ZU2EG ボードは対象内。`vivado-mac install` の ConfigGen で該当デバイスファミリにチェックを入れること(後から削除は不可)。ILA/デバッグコアと IBERT は BASIC 対象外。
 ライセンスは **Ethernet MAC にノードロック**される。vivado-mac は VM の MAC アドレスを固定・永続化しているので:
 
 1. `vivado-mac status` で VM MAC を確認
@@ -76,6 +77,23 @@ vivado-mac destroy                                 # VM全削除(~/vivado-work �
 ```
 
 プロジェクトは `~/vivado-work`(ゲストの `/work`)に置く。Mac 側のエディタでそのまま編集できる。
+
+### GUI(任意、XQuartz 経由)
+
+```bash
+vivado-mac gui-setup          # 初回のみ: Homebrew で XQuartz、ゲストに xauth/フォント、表示テスト
+vivado-mac gui                # Vivado GUI。各ウィンドウが Mac 上の XQuartz ネイティブウィンドウになる
+vivado-mac gui proj/top.xpr   # プロジェクトを開く(~/vivado-work からの相対パス)
+vivado-mac run --x11 CMD      # 任意の X11 プログラム
+```
+
+仕組みは単純な **`ssh -Y` の X11 転送**。Vivado の Java/Swing GUI は X11 を話し、XQuartz が X サーバになる。VNC もデスクトップ環境も仮想 GPU も不要で、VM は headless 構成に arm64 の小パッケージ4つ(`xauth`、フォント、`xdpyinfo`)を足しただけ。GUI セッション中はアイドル自動終了は働かない。
+
+- **XQuartz 2.8.6 以上が必須**。古い版は macOS 27 で `xauth` が落ちる([XQuartz#520](https://github.com/XQuartz/XQuartz/issues/520))— これは ssh の転送でまさに使う処理。2.8.7 beta は 27.0.1 でクラッシュ([#524](https://github.com/XQuartz/XQuartz/issues/524))。`gui-setup` は `brew install --cask xquartz`(現在ちょうど 2.8.6)を使い、手動インストール版が邪魔なら[公式のアンインストール手順](https://www.xquartz.org/FAQs.html)を表示する。Homebrew が無い場合は署名済み pkg を取得し SHA-256 を検証して入れる
+- XQuartz 初回導入後は一度ログアウト/ログイン(launchd が `DISPLAY` を設定する)
+- GUI の「Run Synthesis / Implementation」は `launch_runs`(子プロセス)経由で、Rosetta 下で壊れやすい既知の経路。落ちる場合はビルドだけ in-process Tcl で回し、GUI はプロジェクト構成・IP Integrator・回路図/デバイスビュー・Hardware Manager に使う
+- 既知の癖: 真っ黒なウィンドウはリサイズすると描画される。macOS 27 の Mission Control は X11 ウィンドウを最小化できない([#519](https://github.com/XQuartz/XQuartz/issues/519)、Apple 側のバグ)。描画はネイティブより遅い
+- **状態: 実装済み、実機未検証**(2026-10)。headless フローには影響しない
 
 VM は**常駐しない**: コマンド実行時に自動起動(約30秒)し、アイドル15分で自動終了する。
 連続作業中(コマンド実行中)は終了しない。挙動は `vivado-mac setup --idle 分数` で変更
@@ -106,7 +124,7 @@ Vivado 2026.1 の **synth → opt → place → route → write_bitstream フル
 - Vivado が `realloc(): invalid pointer` で落ちたら(2026.1 では未再現):
   `export LD_PRELOAD=/opt/Xilinx/udev_stub_x86_64.so` を試す
 - `xsdb` 等の他ツールは `vivado-mac shell` 内で `source /opt/Xilinx/*/Vivado/settings64.sh`
-- USB JTAG 書き込みは非対応(headless スコープ外)。ビットストリームは `/work` に出るので、
+- USB JTAG 書き込みは非対応。ビットストリームは `/work` に出るので、
   書き込みは openFPGALoader(Mac ネイティブ)等を利用
 - Apple は Rosetta 2 の一般提供を macOS 27 まで保証(WWDC 2025)。macOS 28 以降は要注視
 
@@ -119,4 +137,5 @@ Vivado 2026.1 の **synth → opt → place → route → write_bitstream フル
 
 - [ichi4096/vivado-on-silicon-mac](https://github.com/ichi4096/vivado-on-silicon-mac) /
   [minorin22 fork](https://github.com/minorin22/vivado-on-silicon-mac) — Docker + VNC による GUI 版の先行実装
+- [andrivet/vivado-on-silicon-mac-x11](https://github.com/andrivet/vivado-on-silicon-mac-x11) — XQuartz で Vivado GUI を Mac デスクトップに出した先行例(Docker + TCP 直結。本ツールは ssh -Y)
 - UG973 (2026.1): 対応 OS は Ubuntu 22.04/24.04, RHEL 8/9/10 ほか
