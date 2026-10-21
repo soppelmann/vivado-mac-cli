@@ -136,6 +136,15 @@ route_design
 write_bitstream -force /work/proj/top.bit
 ```
 
+## Scripted projects
+
+[`examples/`](examples/README.md) holds a small Tcl layer for keeping each Vivado design as a few
+source files plus a `project.tcl` that regenerates the project, block design and bitstream
+(`vivado-mac vivado -mode batch -source myproj/project.tcl`): `lib/vmk.tcl` is the flow,
+`lib/te0820.tcl` has board helpers for a Trenz TE0820 (Zynq UltraScale+) on a TE0701 carrier,
+`template/` starts a new project (RTL, pins, and a `/dev/mem` C program for the PS side), and
+`te0820/phase1`, `phase2` are worked examples up to an AXI GPIO driven from FreeBSD.
+
 ## The Rosetta workaround catalog
 
 Everything below was hit, root-caused, and fixed live on real hardware. The tool applies all of it automatically — listed here because it's the actual hard-won knowledge of running Vivado 2026.1 under Rosetta, and none of it was previously documented anywhere:

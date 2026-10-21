@@ -129,6 +129,10 @@ Vivado 2026.1 の **synth → opt → place → route → write_bitstream フル
 
 2026-10-21(M1 Pro / macOS 27.0.1)に **Zynq UltraScale+ ZU2EG**(`xczu2eg-sbva484-1-e`)でも同フローを確認(小規模デザインで 2分23秒、BASIC ライセンス、`install --gui` で導入)。ゲストの `fstrim` で 112 GiB が Mac 側に返却され、スパースディスクが実際に縮むことも確認。
 
+## スクリプト駆動のプロジェクト
+
+[`examples/`](examples/README.md) に、各デザインを少数のソースファイル + `project.tcl`(プロジェクト・ブロックデザイン・ビットストリームを再生成する)として保つための小さな Tcl 層を置いた(`vivado-mac vivado -mode batch -source myproj/project.tcl`)。`lib/vmk.tcl` がフロー、`lib/te0820.tcl` が Trenz TE0820(Zynq UltraScale+)+ TE0701 キャリア用のヘルパ、`template/` が新規プロジェクトの雛形(RTL、ピン、PS 側の `/dev/mem` C プログラム)、`te0820/phase1`・`phase2` が FreeBSD から AXI GPIO を叩くまでの実例。
+
 ## Rosetta 下の既知の注意点(このツールが自動対処するもの)
 
 - **xsetup が「32bit 非対応」で即死** → ARM bash の `uname -m` が原因。`/opt/vivado-shim` の
