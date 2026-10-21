@@ -55,6 +55,12 @@ vivado-mac install    # finds the installer in ~/Downloads automatically
 
 Interactive AMD token auth → edition pick (choose Vivado) → EULA confirm → ~22 GB download + install.
 
+If the token step answers `Invalid E-mail Address or Password` for a login that works on amd.com, that is AMD's batch installer, not the terminal: its legacy `xilinx.com/.../oauth/login` endpoint returns 401 for some accounts while the graphical installer accepts the same credentials (seen 2026-10 with a fresh AMD account; the ssh/pty path was verified to deliver the password byte-for-byte). Use the GUI instead — it needs the [XQuartz setup](#gui-optional-through-xquartz):
+
+```bash
+vivado-mac install --gui      # AMD's installer window on the Mac desktop, then the same post-install fixes
+```
+
 ## Licensing (changed in 2026.1)
 
 Vivado 2026.1 requires a license even for basic use. The free **BASIC tier** is node-locked to a MAC address — and `vivado-mac` pins the VM's MAC permanently, so:

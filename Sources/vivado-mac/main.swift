@@ -14,6 +14,9 @@ USAGE:
   vivado-mac install [PATH/TO/FPGAs_..._Lin64.bin] [--config FILE] [--accept-eulas]
                           install Vivado into the VM (batch mode); without a
                           path, finds the installer in ~/Downloads or the work dir
+             --gui        run AMD's graphical installer through XQuartz instead of
+                          batch mode (use when AuthTokenGen rejects your login), then
+                          apply the post-install fixes
              --post-only  only (re)apply the Rosetta fixes and wrappers to an
                           existing /opt/Xilinx (e.g. after installing via the GUI)
   vivado-mac vivado [ARGS...]   run vivado in the guest (e.g. -mode batch -source x.tcl)
@@ -317,11 +320,40 @@ func cmdInstall(_ args: [String]) throws {
         die("installer extraction failed")
     }
 
+    if flags["--gui"] != nil {
+        requireHostX11()
+        _ = sshExec(ip, "sudo mkdir -p /opt/Xilinx && sudo chown vivado:vivado /opt/Xilinx")
+        print("""
+
+        Opening AMD's graphical installer on your desktop (XQuartz). In it:
+          • sign in with your AMD account
+          • Product: Vivado; untick Vitis Model Composer and 'Acquire or Manage a License Key'
+          • Devices: tick only the families you need (free BASIC tier: 7 Series incl. Zynq-7000,
+            Zynq UltraScale+ MPSoC ZU1–ZU7, Spartan/Artix UltraScale+, Kintex UltraScale+ KU3P/KU5P)
+          • Destination: /opt/Xilinx (prepared and writable)
+        Keep this terminal open until the installer window closes.
+        """)
+        guard sshExec(ip, "PATH=/opt/vivado-shim:$PATH /work/.installer/xsetup", x11: true) == 0 else {
+            die("the graphical installer exited with an error — rerun `vivado-mac install --gui` to resume")
+        }
+        let (_, viv) = sshCapture(ip, "ls -d /opt/Xilinx/*/Vivado /opt/Xilinx/Vivado/* 2>/dev/null | head -1")
+        guard !viv.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            die("no Vivado under /opt/Xilinx — the installer was closed before it finished")
+        }
+        postInstall(ip, cfg)
+        return
+    }
+
     let (_, tokenCheck) = sshCapture(ip, "test -f ~/.Xilinx/wi_authentication_key && echo yes")
     if !tokenCheck.contains("yes") {
         note("AMD account login (AuthTokenGen) — enter your AMD/Xilinx credentials:")
         guard sshExec(ip, "PATH=/opt/vivado-shim:$PATH /work/.installer/xsetup -b AuthTokenGen", tty: true) == 0 else {
-            die("AuthTokenGen failed — rerun `vivado-mac install` to retry")
+            die("""
+            AuthTokenGen failed. If your login works on amd.com, this is AMD's batch
+            installer rejecting the account (its legacy token endpoint answers 401 even
+            though the terminal delivers the password unchanged) — the graphical
+            installer accepts the same login:  vivado-mac install --gui
+            """)
         }
     }
 
