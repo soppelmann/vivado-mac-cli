@@ -8,7 +8,7 @@ let package = Package(
         .executableTarget(
             name: "vivado-mac",
             path: "Sources/vivado-mac",
-            linkerSettings: [.linkedFramework("Virtualization")]
+            linkerSettings: [.linkedFramework("Virtualization"), .linkedFramework("IOUSBHost")]
         )
     ]
 )

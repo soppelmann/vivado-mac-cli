@@ -8,6 +8,7 @@ Ubuntu 24.04 (ARM64) VM に **Rosetta 2** を注入して x86-64 Linux 版 Vivad
 ```
 Mac (Apple Silicon)
 ├─ XQuartz(任意、Homebrew で導入)⇐ ssh -Y で Vivado GUI のウィンドウが Mac デスクトップに出る
+├─ usbipd-mac(任意、`jtag setup` がビルド)⇒ USB/IP で JTAG ケーブルが VM 内に見える
 └─ vivado-mac (Swift CLI, 依存ゼロ, ad-hoc署名のみ)
    └─ Virtualization.framework VM: Ubuntu 24.04 ARM64
       ├─ Rosetta 2 (VZLinuxRosettaDirectoryShare + binfmt_misc) ← x86-64 AOT変換
@@ -95,6 +96,23 @@ vivado-mac run --x11 CMD      # 任意の X11 プログラム
 - 既知の癖: 真っ黒なウィンドウはリサイズすると描画される。macOS 27 の Mission Control は X11 ウィンドウを最小化できない([#519](https://github.com/XQuartz/XQuartz/issues/519)、Apple 側のバグ)。描画はネイティブより遅い
 - **状態: 実装済み、実機未検証**(2026-10)。headless フローには影響しない
 
+### USB JTAG ケーブル(任意、USB/IP 経由)
+
+```bash
+vivado-mac jtag attach        # ケーブル/ボードを挿してから。初回は usbipd-mac をビルド(約3分)
+vivado-mac jtag status        # Mac 側のデバイス、ゲスト側のアタッチ状況、hw_server
+vivado-mac jtag detach        # ケーブルを macOS に返す(--stop でデーモンも停止)
+```
+
+Virtualization.framework に USB パススルーは無いので、**USB/IP** で共有する。Mac 側は [usbipd-mac](https://github.com/beriberikix/usbipd-mac)(純 Swift、MIT。IOKit 経由でユーザー空間からデバイスを扱うので root もカーネル/システム拡張も不要)がポート 3240 で配信し、ゲスト側はカーネルの `vhci-hcd` と標準の `usbip` クライアントが取り込む。Vivado の `hw_server`(x86-64、Rosetta 下)からは普通の USB デバイスに見える。`jtag setup` は usbipd-mac を固定コミットで取得し、[tae2yi/vivado-on-mac](https://github.com/tae2yi/vivado-on-mac) の2つの修正(インポート要求の TCP フレーミング、エンドポイント毎の直列 URB キュー。これが無いと書き込みが途中で止まる)を当てて `~/.vivado-mac` にビルドする。ゲスト側(`linux-tools-virtual`、`linux-modules-extra-<kernel>`、Vivado の `52-xilinx-*.rules`)は初回 attach 時に自動導入。この VM は本物の udev が動いているので、権限付与と `ftdi_sio` の unbind は Vivado のルールが通常の Linux と同じように処理する。
+
+- 対象ケーブルは Vivado のルールが扱うベンダ ID で探す: `03fd` Platform Cable USB/USB II、`0403` FTDI 系(Xilinx/Digilent のオンボード JTAG)、`1443` Digilent。`--busid` で明示指定も可
+- **Platform Cable USB II** は hw_server がファームウェアを流し込むまで `03fd:0013`、その後 `03fd:0008` に再列挙される。`jtag attach` が USB コンフィグ選択(macOS は未設定のまま放置する)→ hw_server 起動 → `0008` 待ち → 再共有まで自動で行う。初回接続は約 40 秒。✅ が出る前に Auto Connect を押すと `[Xicom 50-198] Cannot support out-of-date hw_server` で 30 秒ほど固まる
+- macOS が `usbipd` の着信接続を許可するか一度聞いてくる場合がある: 許可する(クライアントは NAT 上の VM のみ)
+- macOS がカーネルドライバを割り当てたデバイス(HID、ストレージ、オーディオ、カメラ)は共有できない(Apple は usbipd-mac に DriverKit entitlement を出さなかった)。JTAG ケーブルはベンダ固有クラスなので影響なし
+- 書き込み中にケーブルを抜いたり usbipd を再起動しないこと。Platform Cable はトランザクション途中で切られると物理的に挿し直すまで応答しなくなる
+- **状態: 実装済み、本環境では実機未検証**(2026-10)。tae2yi は同じ経路(usbipd-mac + パッチ → vhci-hcd → Rosetta 下 hw_server)を Platform Cable USB II × Vivado 2026.1 で検証済み。FTDI/Digilent はベンダ ID で扱うが未検証。`vivado-mac destroy` は usbipd-mac のビルドも消す(次の `jtag attach` で再ビルド)
+
 VM は**常駐しない**: コマンド実行時に自動起動(約30秒)し、アイドル15分で自動終了する。
 連続作業中(コマンド実行中)は終了しない。挙動は `vivado-mac setup --idle 分数` で変更
 (`0` = 常駐、明示的に `vivado-mac stop` するまで動き続ける)。
@@ -124,8 +142,8 @@ Vivado 2026.1 の **synth → opt → place → route → write_bitstream フル
 - Vivado が `realloc(): invalid pointer` で落ちたら(2026.1 では未再現):
   `export LD_PRELOAD=/opt/Xilinx/udev_stub_x86_64.so` を試す
 - `xsdb` 等の他ツールは `vivado-mac shell` 内で `source /opt/Xilinx/*/Vivado/settings64.sh`
-- USB JTAG 書き込みは非対応。ビットストリームは `/work` に出るので、
-  書き込みは openFPGALoader(Mac ネイティブ)等を利用
+- USB JTAG は USB/IP 経由(上記)。ネイティブなパススルーではなく、本環境では未検証。
+  ケーブル無しなら、ビットストリームは `/work` に出るので openFPGALoader(Mac ネイティブ)等で書き込む
 - Apple は Rosetta 2 の一般提供を macOS 27 まで保証(WWDC 2025)。macOS 28 以降は要注視
 
 ## 状態ファイル
@@ -138,4 +156,5 @@ Vivado 2026.1 の **synth → opt → place → route → write_bitstream フル
 - [ichi4096/vivado-on-silicon-mac](https://github.com/ichi4096/vivado-on-silicon-mac) /
   [minorin22 fork](https://github.com/minorin22/vivado-on-silicon-mac) — Docker + VNC による GUI 版の先行実装
 - [andrivet/vivado-on-silicon-mac-x11](https://github.com/andrivet/vivado-on-silicon-mac-x11) — XQuartz で Vivado GUI を Mac デスクトップに出した先行例(Docker + TCP 直結。本ツールは ssh -Y)
+- [tae2yi/vivado-on-mac](https://github.com/tae2yi/vivado-on-mac) — usbipd-mac による JTAG over USB/IP と、本ツールが同梱する usbipd-mac の2つの修正(CC0)。[beriberikix/usbipd-mac](https://github.com/beriberikix/usbipd-mac) — USB/IP サーバ本体(MIT)
 - UG973 (2026.1): 対応 OS は Ubuntu 22.04/24.04, RHEL 8/9/10 ほか

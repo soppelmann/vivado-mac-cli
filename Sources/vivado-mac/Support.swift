@@ -633,4 +633,86 @@ enum Assets {
     if [ -n "$vbin" ]; then case ":$PATH:" in *":$vbin:"*) ;; *) PATH="$PATH:$vbin" ;; esac; fi
     unset vbin
     """
+
+    // MARK: USB JTAG over USB/IP (see JTAG.swift)
+
+    /// Guest side of USB/IP, idempotent and cheap to rerun. vhci-hcd lives in
+    /// linux-modules-extra-<running kernel> (not in the cloud image); the usbip
+    /// client comes from linux-tools-virtual, which tracks the kernel meta
+    /// package. libusb is for the x86-64 hw_server. If Vivado is installed, its
+    /// own cable udev rules (52-xilinx-*.rules: permissions + ftdi_sio unbind)
+    /// are installed through AMD's install_drivers — this VM runs a real udev,
+    /// so they fire for USB/IP-attached devices like for local ones.
+    static let jtagProvisionScript = """
+    #!/bin/bash
+    set -e
+    k=$(uname -r)
+    pkgs="linux-tools-virtual linux-tools-common usbutils libusb-1.0-0:amd64 linux-modules-extra-$k"
+    missing=$(for p in $pkgs; do dpkg -s "$p" >/dev/null 2>&1 || echo "$p"; done)
+    if [ -n "$missing" ]; then
+      echo "installing: $(echo $missing)"
+      if ! { sudo apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $missing; } >/tmp/jtag-apt.log 2>&1; then
+        tail -20 /tmp/jtag-apt.log
+        echo "hint: if linux-modules-extra-$k is not in the archive any more, update the kernel and reboot:"
+        echo "      vivado-mac run 'sudo apt-get install -y linux-virtual && sudo reboot'"
+        echo JTAG_PROVISION_FAIL; exit 1
+      fi
+    fi
+    echo vhci-hcd | sudo tee /etc/modules-load.d/vivado-mac-usbip.conf >/dev/null
+    sudo modprobe vhci-hcd
+    d=$(ls -d /opt/Xilinx/*/Vivado/data/xicom/cable_drivers/lin64/install_script/install_drivers 2>/dev/null | head -1)
+    if [ -n "$d" ] && [ ! -f /etc/udev/rules.d/52-xilinx-pcusb.rules ]; then
+      echo "installing Vivado cable udev rules (install_drivers)"
+      (cd "$d" && sudo ./install_drivers) >/tmp/jtag-drivers.log 2>&1 || echo "install_drivers failed (see /tmp/jtag-drivers.log)"
+      sudo udevadm control --reload 2>/dev/null || true
+    fi
+    command -v usbip >/dev/null && lsmod | grep -q '^vhci_hcd' && echo JTAG_PROVISION_OK
+    """
+
+    /// Attach one shared device: `attach HOST BUSID`. Prints
+    /// `ATTACHED <vid:pid> <devnode>`; NEED_PROVISION if the guest lacks
+    /// vhci-hcd/usbip. Drops a stale port for the same remote busid first (an
+    /// attachment survives the Mac side going away as a dead port). The chmod
+    /// and ftdi_sio unbind duplicate what Vivado's udev rules do, for the
+    /// window before Vivado (and its rules) are installed.
+    static let usbipAttachScript = """
+    #!/bin/bash
+    host=$1; busid=$2
+    sudo modprobe vhci-hcd 2>/dev/null || { echo NEED_PROVISION; exit 2; }
+    command -v usbip >/dev/null || { echo NEED_PROVISION; exit 2; }
+    for port in $(sudo usbip port 2>/dev/null | awk -v s="/$busid" '/^Port /{p=$2+0} substr($0, length($0)-length(s)+1) == s {print p}'); do
+      sudo usbip detach -p "$port" >/dev/null 2>&1 && echo "dropped stale port $port"
+    done
+    ok=
+    for i in 1 2 3 4 5; do
+      out=$(sudo usbip attach -r "$host" -b "$busid" 2>&1) && { ok=1; break; }
+      sleep 2
+    done
+    [ -n "$ok" ] || { echo "$out"; echo ATTACH_FAIL; exit 1; }
+    node=; vidpid=; sysfs=
+    for i in $(seq 1 15); do
+      sysfs=$(sudo usbip port 2>/dev/null | awk -v s="/$busid" 'substr($0, length($0)-length(s)+1) == s {print $1}' | tail -1)
+      d=/sys/bus/usb/devices/$sysfs
+      if [ -n "$sysfs" ] && [ -f "$d/busnum" ] && [ -f "$d/idVendor" ]; then
+        node=$(printf "/dev/bus/usb/%03d/%03d" "$(cat $d/busnum)" "$(cat $d/devnum)")
+        vidpid="$(cat $d/idVendor):$(cat $d/idProduct)"
+        [ -e "$node" ] && break
+      fi
+      sleep 1
+    done
+    [ -n "$node" ] && [ -e "$node" ] || { echo ATTACH_NO_NODE; exit 1; }
+    sudo chmod 666 "$node"
+    case $vidpid in 0403:*)
+      for i in 0 1; do echo -n "$sysfs:1.$i" | sudo tee /sys/bus/usb/drivers/ftdi_sio/unbind >/dev/null 2>&1; done ;;
+    esac
+    echo "ATTACHED $vidpid $node"
+    """
+
+    static let usbipDetachScript = """
+    #!/bin/bash
+    for port in $(sudo usbip port 2>/dev/null | awk '/^Port /{print $2+0}'); do
+      sudo usbip detach -p "$port" >/dev/null 2>&1 && echo "detached port $port"
+    done
+    echo DETACH_DONE
+    """
 }

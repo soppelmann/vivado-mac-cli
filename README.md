@@ -9,6 +9,7 @@ A zero-dependency Swift CLI (`vivado-mac`) drives Apple's **Virtualization.frame
 ```
 Mac (Apple Silicon)
 ├─ XQuartz (optional, via Homebrew) ⇐ ssh -Y: Vivado's GUI windows land on the Mac desktop
+├─ usbipd-mac (optional, built by `jtag setup`) ⇒ USB/IP: the JTAG cable appears inside the VM
 └─ vivado-mac (Swift CLI, zero deps, ad-hoc signed)
    └─ Virtualization.framework VM: Ubuntu 24.04 ARM64
       ├─ Rosetta 2 (VZLinuxRosettaDirectoryShare + binfmt_misc) ← x86-64 AOT translation
@@ -95,6 +96,23 @@ This is plain **`ssh -Y` X11 forwarding** into the same headless VM — Vivado's
 - Known quirks: a window that stays black → resize it once (XQuartz redraw); macOS 27 Mission Control can't minimize X11 windows ([#519](https://github.com/XQuartz/XQuartz/issues/519), Apple bug); Java2D over a forwarded display is slower than native — the wrapper already sets `-Dsun.java2d.pmoffscreen=false`, and `J2D_USE_MITSHM=false` / `_JAVA_AWT_WM_NONREPARENTING=1` are documented opt-ins in `/usr/local/bin/vivado`.
 - **Status: implemented, not yet verified on hardware** (2026-10). The headless flow is unaffected either way.
 
+### USB JTAG cable (optional, over USB/IP)
+
+```bash
+vivado-mac jtag attach        # plug the cable/board in first; builds usbipd-mac on first use (~3 min)
+vivado-mac jtag status        # what the Mac sees, what the guest has attached, hw_server state
+vivado-mac jtag detach        # give the cable back to macOS (--stop also stops the daemon)
+```
+
+Virtualization.framework has no USB passthrough, so the cable is shared from the Mac over **USB/IP**: [usbipd-mac](https://github.com/beriberikix/usbipd-mac) (pure Swift, MIT; drives the device from userspace through IOKit — no root, no kernel/system extension) serves it on port 3240, and the guest kernel's `vhci-hcd` imports it with the standard `usbip` client, so Vivado's `hw_server` (x86-64, under Rosetta) sees an ordinary USB device. `jtag setup` clones usbipd-mac at a pinned commit, applies the two fixes from [tae2yi/vivado-on-mac](https://github.com/tae2yi/vivado-on-mac) (TCP stream framing of the import request, serial per-endpoint URB queues — without them the cable attaches but programming stalls) and builds it into `~/.vivado-mac`. The guest side (`linux-tools-virtual`, `linux-modules-extra-<kernel>`, Vivado's `52-xilinx-*.rules` via `install_drivers`) installs itself on the first attach; because this VM runs a real udev, Vivado's cable rules handle permissions and the `ftdi_sio` unbind like on any Linux box.
+
+- Cables are found by the vendor IDs Vivado's rules cover: `03fd` Platform Cable USB/USB II, `0403` FTDI-based (Xilinx and Digilent on-board JTAG), `1443` Digilent. `--busid` picks a specific device.
+- A **Platform Cable USB II** enumerates as `03fd:0013` until hw_server loads its firmware, then re-enumerates as `03fd:0008`; `jtag attach` selects its USB configuration (macOS leaves it unconfigured), starts hw_server, waits for the `0008` identity and re-shares it. First connect ≈ 40 s. Don't press Auto Connect before `jtag attach` prints ✅ — Vivado otherwise reports `[Xicom 50-198] Cannot support out-of-date hw_server` and hangs for half a minute.
+- macOS may ask once whether `usbipd` may accept incoming connections: allow it (the only client is the VM, on the NAT bridge).
+- Devices macOS has bound a kernel driver to (HID, storage, audio, cameras) can't be shared — Apple declined usbipd-mac the DriverKit entitlement. JTAG cables are vendor-specific and unaffected.
+- Don't unplug the cable or restart usbipd mid-programming: a Platform Cable left mid-transaction stops answering until it is physically re-plugged.
+- **Status: implemented, not yet verified on hardware here** (2026-10). tae2yi verified the same chain (usbipd-mac + patch → vhci-hcd → hw_server under Rosetta) with a Platform Cable USB II on Vivado 2026.1; FTDI/Digilent cables are handled by vendor ID but nobody has run them through it yet. `vivado-mac destroy` removes the usbipd-mac build along with the VM (it rebuilds on the next `jtag attach`).
+
 **Use in-process Tcl, not `launch_runs`** — child-process spawning is the one flaky path under Rosetta:
 
 ```tcl
@@ -124,7 +142,7 @@ Everything below was hit, root-caused, and fixed live on real hardware. The tool
 ## Limitations
 
 - The GUI is X11-forwarded Java Swing, not a local desktop: slower than native, Mission Control quirks on macOS 27, and unverified on 2026.1 so far (see [GUI](#gui-optional-through-xquartz)). For a full Linux desktop over VNC see [ichi4096/vivado-on-silicon-mac](https://github.com/ichi4096/vivado-on-silicon-mac)
-- No USB JTAG passthrough. Bitstreams land in `~/vivado-work`; flash with [openFPGALoader](https://github.com/trabucayre/openFPGALoader) (native on macOS) or XVC
+- USB JTAG goes through USB/IP (see [above](#usb-jtag-cable-optional-over-usbip)), not native passthrough; unverified here so far. Without a cable, bitstreams land in `~/vivado-work` and [openFPGALoader](https://github.com/trabucayre/openFPGALoader) (native on macOS) flashes them
 - Rosetta speed is roughly 70–80 % of native x86; big UltraScale+ builds belong on a real x86 box
 - Apple guarantees Rosetta 2 through macOS 27 (WWDC 2025); macOS 28 is a question mark
 
@@ -133,3 +151,4 @@ Everything below was hit, root-caused, and fixed live on real hardware. The tool
 - [ichi4096/vivado-on-silicon-mac](https://github.com/ichi4096/vivado-on-silicon-mac) and the [minorin22 fork](https://github.com/minorin22/vivado-on-silicon-mac) — the Docker + VNC pioneers
 - [filmil/vivado-docker](https://github.com/filmil/vivado-docker) — the udev-stub and in-process-Tcl workarounds for 2025.x
 - [andrivet/vivado-on-silicon-mac-x11](https://github.com/andrivet/vivado-on-silicon-mac-x11) — first to put Vivado's GUI on the Mac desktop through XQuartz (Docker + direct TCP; we use ssh -Y instead)
+- [tae2yi/vivado-on-mac](https://github.com/tae2yi/vivado-on-mac) — JTAG over USB/IP with usbipd-mac, including the two usbipd-mac fixes this tool embeds (CC0); [beriberikix/usbipd-mac](https://github.com/beriberikix/usbipd-mac) — the USB/IP server itself (MIT)

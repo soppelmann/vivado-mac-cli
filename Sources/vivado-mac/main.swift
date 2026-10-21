@@ -20,6 +20,9 @@ USAGE:
                           X11 forwarding packages in the guest, display test
   vivado-mac run [--x11] CMD [ARGS...]  run any command in the guest work dir
   vivado-mac shell [--x11]      interactive shell in the guest
+  vivado-mac jtag attach [--busid B]  share a USB JTAG cable with the guest (USB/IP)
+  vivado-mac jtag detach [--stop]     give it back to the Mac (--stop: also stop usbipd)
+  vivado-mac jtag status | list | setup
   vivado-mac start | stop | status | doctor
   vivado-mac destroy            delete the VM and all state (work dir is kept)
 
@@ -376,6 +379,7 @@ func cmdInstall(_ args: [String]) throws {
           vivado-mac vivado -mode batch -source build.tcl
     GUI:  vivado-mac gui-setup   (once: XQuartz + guest X11 packages)
           vivado-mac gui
+    JTAG: vivado-mac jtag attach (USB cable → guest over USB/IP; then Hardware Manager → Auto Connect)
     Note: under Rosetta, prefer in-process Tcl (synth_design, place_design, …)
           over launch_runs — child-process spawning is the known crash path.
     """)
@@ -634,6 +638,7 @@ do {
     case "shell": cmdShell(Array(argv.dropFirst()))
     case "gui": cmdGUI(Array(argv.dropFirst()))
     case "gui-setup": cmdGUISetup(Array(argv.dropFirst()))
+    case "jtag": cmdJTAG(Array(argv.dropFirst()))
     case "start": cmdStart()
     case "stop": cmdStop()
     case "status": cmdStatus()
