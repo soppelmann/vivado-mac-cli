@@ -19,9 +19,10 @@ USAGE:
                           apply the post-install fixes
              --post-only  only (re)apply the Rosetta fixes and wrappers to an
                           existing /opt/Xilinx (e.g. after installing via the GUI)
-  vivado-mac vivado [ARGS...]   run vivado in the guest (e.g. -mode batch -source x.tcl)
+  vivado-mac vivado [ARGS...]   run vivado headless in the guest: -mode tcl for a prompt,
+                                -mode batch -source x.tcl for a script
   vivado-mac gui [ARGS...]      run the Vivado GUI; windows open on the Mac via XQuartz
-  vivado-mac tcl [CMD...]       send Tcl to the running GUI session (no CMD: a prompt)
+  vivado-mac tcl [CMD...]       type Tcl into an already-open GUI session (no CMD: a prompt)
       --list | --project NAME | --port N   several GUIs open: list them / pick one
   vivado-mac projects           list Vivado projects (.xpr) in the work dir
   vivado-mac gui-setup [--yes]  one-time GUI prep: XQuartz on the Mac (via Homebrew),
@@ -595,7 +596,7 @@ func cmdTcl(_ argsIn: [String]) {
 
     let sessions = tclSessions(ip)
     if flags["--list"] != nil {
-        if sessions.isEmpty { print("no running Vivado with a Tcl bridge (start one with `vivado-mac gui`)") }
+        if sessions.isEmpty { print("no running Vivado GUI (vivado-mac gui); for a headless prompt use: vivado-mac vivado -mode tcl") }
         for s in sessions { print("port \(s.port)  \(s.project)") }
         return
     }
@@ -613,7 +614,13 @@ func cmdTcl(_ argsIn: [String]) {
     } else if sessions.count == 1 {
         chosen = sessions[0]
     } else if sessions.isEmpty {
-        die("no running Vivado with a Tcl bridge. Start one with `vivado-mac gui`, or in an open GUI's Tcl Console run: source \(tclBridgeGuestPath)")
+        die("""
+        no running Vivado GUI to connect to. `vivado-mac tcl` types into an open IDE;
+          for the IDE:                 vivado-mac gui [project.xpr]
+          for a headless Tcl prompt:   vivado-mac vivado -mode tcl
+          for a script:                vivado-mac vivado -mode batch -source build.tcl
+        (a GUI started another way needs `source \(tclBridgeGuestPath)` in its Tcl Console once)
+        """)
     } else {
         print("several Vivado sessions are open — pick one:")
         for s in sessions { print("  vivado-mac tcl --project \(s.project)      (port \(s.port))") }
