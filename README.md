@@ -41,7 +41,7 @@ Honest caveats: Rosetta 2 is guaranteed only through macOS 27 (per WWDC 2025), t
 
 ```bash
 make build
-sudo make install     # /usr/local/bin/vivado-mac
+sudo make install     # /usr/local/bin/vivado-mac (build first; install does not rebuild)
 vivado-mac setup      # create + provision the VM (one-time, a few minutes)
 ```
 

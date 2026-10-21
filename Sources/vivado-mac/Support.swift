@@ -107,8 +107,15 @@ var stdinIsTTY: Bool { isatty(0) == 1 }
 
 // MARK: - SSH
 
+/// Every ssh invocation pins its own options: the user's ~/.ssh/config may
+/// multiplex connections (ControlMaster auto + ControlPersist), and a session
+/// requested over a master that was opened without X11 forwarding silently
+/// gets no DISPLAY. Agent forwarding into the guest is not wanted either.
 private func sshBaseArgs(ip: String) -> [String] {
     [
+        "-o", "ControlMaster=no",
+        "-o", "ControlPath=none",
+        "-o", "ForwardAgent=no",
         "-i", Paths.sshKey.path,
         "-o", "UserKnownHostsFile=\(Paths.knownHosts.path)",
         "-o", "StrictHostKeyChecking=accept-new",
