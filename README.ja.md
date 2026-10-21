@@ -86,7 +86,10 @@ vivado-mac gui-setup          # 初回のみ: Homebrew で XQuartz、ゲスト�
 vivado-mac gui                # Vivado GUI。各ウィンドウが Mac 上の XQuartz ネイティブウィンドウになる
 vivado-mac gui proj/top.xpr   # プロジェクトを開く(~/vivado-work からの相対パス)
 vivado-mac run --x11 CMD      # 任意の X11 プログラム
+vivado-mac tcl 'CMD'          # 起動中の GUI セッションに Tcl を送る(CMD 無しで vivado% プロンプト)
 ```
+
+**GUI を開いたまま Mac のターミナルから Tcl**: Vivado にリモート Tcl は無く、`start_gui` 後はコンソールが GUI 側に移る。そこで `vivado-mac gui` は小さなブリッジ(`/work/.vivado-mac/tclserver.tcl`、VM 内 127.0.0.1 の `socket -server`。vivado-mac の ssh 経由でしか届かない)を source し、`vivado-mac tcl` がそこへコマンドを送る。GUI のインタプリタで実行されるので IDE に即反映。コマンドが *print* する出力(`puts`、`-return_string` 無しの `report_*`)は GUI の Tcl Console 側に出る。別の方法で起動した GUI では Tcl Console で一度 `source /work/.vivado-mac/tclserver.tcl` を実行する。
 
 仕組みは単純な **`ssh -Y` の X11 転送**。Vivado の Java/Swing GUI は X11 を話し、XQuartz が X サーバになる。VNC もデスクトップ環境も仮想 GPU も不要で、VM は headless 構成に arm64 の小パッケージ4つ(`xauth`、フォント、`xdpyinfo`)を足しただけ。GUI セッション中はアイドル自動終了は働かない。
 

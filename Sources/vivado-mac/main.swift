@@ -21,6 +21,7 @@ USAGE:
                           existing /opt/Xilinx (e.g. after installing via the GUI)
   vivado-mac vivado [ARGS...]   run vivado in the guest (e.g. -mode batch -source x.tcl)
   vivado-mac gui [ARGS...]      run the Vivado GUI; windows open on the Mac via XQuartz
+  vivado-mac tcl [CMD...]       send Tcl to the running GUI session (no CMD: a prompt)
   vivado-mac gui-setup [--yes]  one-time GUI prep: XQuartz on the Mac (via Homebrew),
                           X11 forwarding packages in the guest, display test
   vivado-mac run [--x11] CMD [ARGS...]  run any command in the guest work dir
@@ -502,9 +503,44 @@ func cmdGUI(_ args: [String]) {
     guard g.xauth, g.sshd else {
         die("guest is not set up for X11 forwarding (xauth \(g.xauth ? "ok" : "missing"), sshd forwarding \(g.sshd ? "on" : "off")) — run `vivado-mac gui-setup`")
     }
-    let quoted = args.map(shellQuote).joined(separator: " ")
+    var vivadoArgs = args
+    // Load the Tcl bridge unless the user brings their own -source script
+    // (Vivado takes only one); `vivado-mac tcl` then reaches this session.
+    if !args.contains("-source"), writeTclBridge(cfg) {
+        vivadoArgs += ["-source", tclBridgeGuestPath]
+    }
+    let quoted = vivadoArgs.map(shellQuote).joined(separator: " ")
     note("starting the Vivado GUI — windows open on the Mac desktop via XQuartz (first start takes a while; Ctrl-C here closes it)")
     exit(sshExec(ip, "cd /work && vivado \(quoted)", tty: stdinIsTTY, x11: true))
+}
+
+// MARK: - Tcl bridge into the running GUI
+
+let tclBridgePort = 8234
+let tclBridgeGuestPath = "/work/.vivado-mac/tclserver.tcl"
+
+/// Write the bridge server script into the shared work dir (visible to the
+/// guest at tclBridgeGuestPath). Returns false if the work dir is unwritable.
+@discardableResult
+func writeTclBridge(_ cfg: Config) -> Bool {
+    let dir = URL(fileURLWithPath: cfg.workDir).appendingPathComponent(".vivado-mac")
+    do {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Assets.tclBridgeServer.write(to: dir.appendingPathComponent("tclserver.tcl"), atomically: true, encoding: .utf8)
+        return true
+    } catch {
+        note("could not write \(dir.path)/tclserver.tcl: \(error.localizedDescription)")
+        return false
+    }
+}
+
+func cmdTcl(_ args: [String]) {
+    let cfg = loadConfigOrDie()
+    let ip = ensureRunning(cfg)
+    writeTclBridge(cfg)
+    let quoted = args.map(shellQuote).joined(separator: " ")
+    exit(sshExec(ip, "echo \(b64(Assets.tclBridgeClient)) | base64 -d > /tmp/vmtcl.sh && bash /tmp/vmtcl.sh \(tclBridgePort) \(quoted)",
+                 tty: args.isEmpty))
 }
 
 func cmdGUISetup(_ args: [String]) {
@@ -688,6 +724,7 @@ do {
     case "run": cmdRun(Array(argv.dropFirst()))
     case "shell": cmdShell(Array(argv.dropFirst()))
     case "gui": cmdGUI(Array(argv.dropFirst()))
+    case "tcl": cmdTcl(Array(argv.dropFirst()))
     case "gui-setup": cmdGUISetup(Array(argv.dropFirst()))
     case "jtag": cmdJTAG(Array(argv.dropFirst()))
     case "start": cmdStart()

@@ -715,6 +715,73 @@ enum Assets {
     echo "ATTACHED $vidpid $node"
     """
 
+    // MARK: Tcl bridge into a running Vivado GUI (see `vivado-mac tcl`)
+
+    /// Sourced into Vivado at `vivado-mac gui` start (or by hand in the GUI's
+    /// Tcl Console). Vivado has no remote Tcl of its own, and after start_gui
+    /// the terminal prompt is gone until stop_gui; this listens on 127.0.0.1
+    /// inside the VM and evaluates one line per request, returning the result.
+    /// Only reachable through vivado-mac's ssh session. Output that a command
+    /// *prints* (puts, report_* without -return_string) still goes to the GUI
+    /// console; the command's return value is what comes back over the bridge.
+    static let tclBridgeServer = """
+    # vivado-mac Tcl bridge — lets `vivado-mac tcl` drive this session from the Mac.
+    namespace eval ::vmtcl {
+        variable port 8234
+        variable sock
+        proc accept {chan addr p} {
+            fconfigure $chan -buffering line -blocking 0 -translation lf
+            fileevent $chan readable [list ::vmtcl::serve $chan]
+        }
+        proc serve {chan} {
+            if {[gets $chan line] < 0} {
+                if {[eof $chan]} { catch {close $chan} }
+                return
+            }
+            if {[catch {uplevel #0 $line} result]} {
+                puts $chan "ERROR: $result"
+            } else {
+                puts $chan $result
+            }
+            puts $chan "<<vmtcl-end>>"
+        }
+        proc start {} {
+            variable port
+            variable sock
+            if {[info exists sock]} { return }
+            set sock [socket -server ::vmtcl::accept -myaddr 127.0.0.1 $port]
+            puts "vivado-mac Tcl bridge listening on 127.0.0.1:$port  (from the Mac: vivado-mac tcl 'CMD', or vivado-mac tcl for a prompt)"
+        }
+    }
+    ::vmtcl::start
+    """
+
+    /// Guest-side client: `client PORT [CMD...]`. One connection per command,
+    /// via bash's /dev/tcp (no netcat needed). Without CMD: a readline prompt.
+    static let tclBridgeClient = """
+    #!/bin/bash
+    port=$1; shift
+    send() {
+      if ! exec 3<>/dev/tcp/127.0.0.1/$port 2>/dev/null; then
+        echo "no Tcl bridge on port $port. Start Vivado with 'vivado-mac gui' (loads it automatically)," >&2
+        echo "or in the GUI's Tcl Console run:  source /work/.vivado-mac/tclserver.tcl" >&2
+        return 2
+      fi
+      printf '%s\n' "$1" >&3
+      while IFS= read -r l <&3; do
+        [ "$l" = "<<vmtcl-end>>" ] && break
+        printf '%s\n' "$l"
+      done
+      exec 3>&- 3<&-
+    }
+    if [ $# -gt 0 ]; then send "$*"; exit $?; fi
+    send 'puts -nonewline {}; return "connected to Vivado [version -short], project: [catch {current_project} p; set p]"'
+    while IFS= read -r -e -p 'vivado% ' line; do
+      [ -n "$line" ] && { history -s "$line"; send "$line"; }
+    done
+    echo
+    """
+
     static let usbipDetachScript = """
     #!/bin/bash
     for port in $(sudo usbip port 2>/dev/null | awk '/^Port /{print $2+0}'); do
