@@ -63,9 +63,16 @@ namespace eval te0820 {
     }
 
     # Expose a cell pin as a top-level port with a chosen name (constrain it in the XDC).
+    # Vivado names the new port `<pin>_0` or just `<pin>` depending on version; use what it returns.
     proc external {pin name} {
-        make_bd_pins_external [get_bd_pins $pin]
-        set_property NAME $name [get_bd_ports [file tail $pin]_0]
+        set p [make_bd_pins_external [get_bd_pins $pin]]
+        if {![llength $p]} {
+            set tail [file tail $pin]
+            set p [get_bd_ports -quiet ${tail}_0]
+            if {![llength $p]} { set p [get_bd_ports $tail] }
+        }
+        if {[get_property NAME $p] ne $name} { set_property NAME $name $p }
+        return $p
     }
 
     # Phase 3: route a PL interrupt line into the PS (needs `ps -irq 1`).
